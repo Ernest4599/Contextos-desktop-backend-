@@ -1,7 +1,9 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from services.share_link_service import import_from_share_link, ShareLinkError
+from services.conversation_fetcher import fetch_conversation_html
 
 app = FastAPI(title="ContextOS Backend")
 
@@ -29,3 +31,10 @@ async def import_share_link(payload: ShareLinkRequest):
             "success": False,
             "error": e.message,
         }
+
+
+# TEMPORARY DEBUG ENDPOINT - remove once selectors are confirmed
+@app.post("/debug/fetch-html", response_class=HTMLResponse)
+async def debug_fetch_html(payload: ShareLinkRequest):
+    html = await fetch_conversation_html(payload.url)
+    return html
