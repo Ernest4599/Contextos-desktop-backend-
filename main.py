@@ -81,4 +81,13 @@ async def debug_fetch_html(payload: ShareLinkRequest):
                 break
     result["message_element_hits"] = hits
 
+    # Raw string search: does "what" appear ANYWHERE in the raw HTML text,
+    # including inside <script> tags / JSON blobs?
+    raw_match_index = html.lower().find("what")
+    if raw_match_index != -1:
+        result["raw_html_contains_what"] = True
+        result["raw_html_snippet_around_what"] = html[max(0, raw_match_index - 150):raw_match_index + 150]
+    else:
+        result["raw_html_contains_what"] = False
+
     return result
