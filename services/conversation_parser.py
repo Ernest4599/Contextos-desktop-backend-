@@ -7,14 +7,9 @@ class ParseError(Exception):
 
 
 def parse_claude(html: str) -> list[dict]:
-    """
-    Extracts messages from a rendered Claude share page.
-    Returns a list of {"role": "user"|"assistant", "text": str}.
-    """
     soup = BeautifulSoup(html, "html.parser")
     messages = []
 
-    # Claude share pages typically mark messages with data-testid attributes
     for block in soup.select('[data-testid="user-message"], [data-testid="assistant-message"]'):
         role = "user" if block.get("data-testid") == "user-message" else "assistant"
         text = block.get_text(separator="\n", strip=True)
@@ -22,15 +17,17 @@ def parse_claude(html: str) -> list[dict]:
             messages.append({"role": role, "text": text})
 
     if not messages:
+        print("=== PARSE ERROR (claude) ===")
+        print(f"HTML length: {len(html)}")
+        print("First 3000 chars of HTML:")
+        print(html[:3000])
+        print("=============================")
         raise ParseError("No messages found in Claude share page")
 
     return messages
 
 
 def parse_chatgpt(html: str) -> list[dict]:
-    """
-    Extracts messages from a rendered ChatGPT share page.
-    """
     soup = BeautifulSoup(html, "html.parser")
     messages = []
 
@@ -41,15 +38,16 @@ def parse_chatgpt(html: str) -> list[dict]:
             messages.append({"role": role, "text": text})
 
     if not messages:
+        print("=== PARSE ERROR (chatgpt) ===")
+        print(f"HTML length: {len(html)}")
+        print(html[:3000])
+        print("==============================")
         raise ParseError("No messages found in ChatGPT share page")
 
     return messages
 
 
 def parse_gemini(html: str) -> list[dict]:
-    """
-    Extracts messages from a rendered Gemini share page.
-    """
     soup = BeautifulSoup(html, "html.parser")
     messages = []
 
@@ -61,15 +59,16 @@ def parse_gemini(html: str) -> list[dict]:
             messages.append({"role": role, "text": text})
 
     if not messages:
+        print("=== PARSE ERROR (gemini) ===")
+        print(f"HTML length: {len(html)}")
+        print(html[:3000])
+        print("=============================")
         raise ParseError("No messages found in Gemini share page")
 
     return messages
 
 
 def parse_copilot(html: str) -> list[dict]:
-    """
-    Extracts messages from a rendered Copilot share page.
-    """
     soup = BeautifulSoup(html, "html.parser")
     messages = []
 
@@ -80,15 +79,16 @@ def parse_copilot(html: str) -> list[dict]:
             messages.append({"role": role, "text": text})
 
     if not messages:
+        print("=== PARSE ERROR (copilot) ===")
+        print(f"HTML length: {len(html)}")
+        print(html[:3000])
+        print("==============================")
         raise ParseError("No messages found in Copilot share page")
 
     return messages
 
 
 def parse_grok(html: str) -> list[dict]:
-    """
-    Extracts messages from a rendered Grok share page.
-    """
     soup = BeautifulSoup(html, "html.parser")
     messages = []
 
@@ -99,6 +99,10 @@ def parse_grok(html: str) -> list[dict]:
             messages.append({"role": role, "text": text})
 
     if not messages:
+        print("=== PARSE ERROR (grok) ===")
+        print(f"HTML length: {len(html)}")
+        print(html[:3000])
+        print("===========================")
         raise ParseError("No messages found in Grok share page")
 
     return messages
