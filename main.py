@@ -3,6 +3,8 @@ from pydantic import BaseModel
 
 from services.share_link_service import import_from_share_link, ShareLinkError
 from services.conversation_fetcher import fetch_conversation_html
+from services.conversation_parser import parse_conversation, ParseError
+from services.link_detector import detect_platform
 
 app = FastAPI(title="ContextOS Backend")
 
@@ -32,19 +34,30 @@ async def import_share_link(payload: ShareLinkRequest):
         }
 
 
-# TEMPORARY DEBUG ENDPOINT - returns a short summary instead of raw HTML
+# TEMPORARY DEBUG ENDPOINT
 @app.post("/debug/fetch-html")
 async def debug_fetch_html(payload: ShareLinkRequest):
     html = await fetch_conversation_html(payload.url)
+    platform = detect_platform(payload.url)
 
     title_start = html.find("<title>")
     title_end = html.find("</title>")
     title = html[title_start + 7:title_end] if title_start != -1 else "Not found"
 
-    return {
+    result = {
         "html_length": len(html),
         "page_title": title,
+        "platform": platform,
         "has_cloudflare_challenge": "challenges.cloudflare.com" in html,
-        "has_greeting_placeholder": "How can I help you today" in html,
-        "has_composer": "composer" in html.lower(),
     }
+
+    try:
+        messages = parse_conversation(platform, html)
+        result["parse_success"] = True
+        result["message_count"] = len(messages)
+        result["first_message_preview"] = messages[0]["text"][:200] if messages else None
+    except ParseError as e:
+        result["parse_success"] = False
+        result["parse_error"] = str(e)
+
+    return result
