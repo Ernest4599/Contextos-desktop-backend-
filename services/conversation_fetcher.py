@@ -29,9 +29,8 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
             await stealth_async(page)
 
             def log_response(response):
-                url_lower = response.url.lower()
-                if "api" in url_lower or "chat_conversation" in url_lower or "share" in url_lower:
-                    captured_requests.append(f"{response.status} {response.url}")
+                content_type = response.headers.get("content-type", "")
+                captured_requests.append(f"{response.status} [{content_type}] {response.url}")
 
             page.on("response", log_response)
 
@@ -41,10 +40,11 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
             html = await page.content()
             await browser.close()
 
-            print("=== CAPTURED NETWORK REQUESTS ===")
+            print("=== ALL CAPTURED NETWORK REQUESTS ===")
+            print(f"Total: {len(captured_requests)}")
             for req in captured_requests:
                 print(req)
-            print("==================================")
+            print("======================================")
 
             return html
 
