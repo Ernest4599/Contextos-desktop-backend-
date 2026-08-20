@@ -1,3 +1,4 @@
+import traceback
 from playwright.async_api import async_playwright
 
 
@@ -23,10 +24,10 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 20000) -> str:
                 )
             )
 
-            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
 
             # Give the page a moment to finish any late rendering
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(2000)
 
             html = await page.content()
             await browser.close()
@@ -34,4 +35,10 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 20000) -> str:
             return html
 
     except Exception as e:
+        print("=== FETCH ERROR ===")
+        print(f"URL: {url}")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error message: {e}")
+        traceback.print_exc()
+        print("===================")
         raise FetchError(f"Could not read this link: {e}")
