@@ -8,19 +8,17 @@ class FetchError(Exception):
     pass
 
 
-async def fetch_conversation_html(url: str, timeout_ms: int = 20000) -> str:
+async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
     """
     Renders the given share link URL in a headless browser (with stealth
-    patches to avoid basic bot detection) and returns the fully rendered HTML.
-    Raises FetchError if the page fails to load in time.
+    patches to avoid basic bot detection), waits for the actual app content
+    to mount (not just the boot placeholder), and returns the rendered HTML.
     """
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                ],
+                args=["--disable-blink-features=AutomationControlled"],
             )
             context = await browser.new_context(
                 user_agent=(
@@ -35,9 +33,26 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 20000) -> str:
 
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
 
-            # Give Cloudflare's challenge (if any) time to resolve,
-            # and let the page finish rendering the actual conversation.
-            await page.wait_for_timeout(5000)
+            # Wait for the React app's boot placeholder to be removed,
+            # which signals the real content has mounted.
+            try:
+                await page.wait_for_function(
+                    "() => !document.body.hasAttribute('data-desktop-boot-placeholder') "
+                    "&& !document.documentElement.hasAttribute('data-boot-ui-ready') === false",
+                    timeout=15000,
+                )
+            except Exception:
+                # Fallback: boot placeholder check didn't resolve in time,
+                # continue anyway and try a longer generic wait instead.
+                pass
+
+            # Additional wait for any lingering async rendering / network activity
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+
+            await page.wait_for_timeout(3000)
 
             html = await page.content()
             await browser.close()
