@@ -16,3 +16,4 @@ click==8.4.2
 h11==0.16.0
 annotated-doc==0.0.5
 anyio==4.14.2
+playwright-stealth==1.0.6

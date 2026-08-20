@@ -1,5 +1,6 @@
 import traceback
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 
 class FetchError(Exception):
@@ -9,25 +10,34 @@ class FetchError(Exception):
 
 async def fetch_conversation_html(url: str, timeout_ms: int = 20000) -> str:
     """
-    Renders the given share link URL in a headless browser and returns
-    the fully rendered HTML (after JavaScript has executed).
+    Renders the given share link URL in a headless browser (with stealth
+    patches to avoid basic bot detection) and returns the fully rendered HTML.
     Raises FetchError if the page fails to load in time.
     """
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            context = await browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/120.0.0.0 Safari/537.36"
-                )
+                ),
+                viewport={"width": 1280, "height": 800},
             )
+            page = await context.new_page()
+            await stealth_async(page)
 
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
 
-            # Give the page a moment to finish any late rendering
-            await page.wait_for_timeout(2000)
+            # Give Cloudflare's challenge (if any) time to resolve,
+            # and let the page finish rendering the actual conversation.
+            await page.wait_for_timeout(5000)
 
             html = await page.content()
             await browser.close()
