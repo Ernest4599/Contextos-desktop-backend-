@@ -9,8 +9,6 @@ class FetchError(Exception):
 
 
 async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
-    captured_requests = []
-
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -28,23 +26,39 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
             page = await context.new_page()
             await stealth_async(page)
 
-            def log_response(response):
-                content_type = response.headers.get("content-type", "")
-                captured_requests.append(f"{response.status} [{content_type}] {response.url}")
-
-            page.on("response", log_response)
-
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            await page.wait_for_timeout(8000)
+
+            # Try to explicitly wait for real conversation content to mount,
+            # instead of guessing with a fixed delay. Try several known
+            # selector patterns used by chat UIs; if none show up in time,
+            # fall back to a generous flat wait as a last resort.
+            selectors_to_try = [
+                '[data-testid^="conversation-turn"]',
+                '[data-message-author-role]',
+                'article',
+                '[data-testid="user-message"]',
+                '[data-testid="assistant-message"]',
+            ]
+
+            found_selector = None
+            for selector in selectors_to_try:
+                try:
+                    await page.wait_for_selector(selector, timeout=6000)
+                    found_selector = selector
+                    print(f"[FETCH] Found content via selector: {selector}")
+                    break
+                except Exception:
+                    continue
+
+            if not found_selector:
+                print("[FETCH] No known message selector appeared, falling back to flat wait")
+                await page.wait_for_timeout(8000)
+            else:
+                # Give a moment for any remaining messages to finish rendering
+                await page.wait_for_timeout(2000)
 
             html = await page.content()
             await browser.close()
-
-            print("=== ALL CAPTURED NETWORK REQUESTS ===")
-            print(f"Total: {len(captured_requests)}")
-            for req in captured_requests:
-                print(req)
-            print("======================================")
 
             return html
 
