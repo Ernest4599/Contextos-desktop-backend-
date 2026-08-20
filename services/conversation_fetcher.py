@@ -9,11 +9,8 @@ class FetchError(Exception):
 
 
 async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
-    """
-    Renders the given share link URL in a headless browser (with stealth
-    patches to avoid basic bot detection), waits for the actual app content
-    to mount (not just the boot placeholder), and returns the rendered HTML.
-    """
+    captured_requests = []
+
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -31,31 +28,23 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
             page = await context.new_page()
             await stealth_async(page)
 
+            def log_response(response):
+                url_lower = response.url.lower()
+                if "api" in url_lower or "chat_conversation" in url_lower or "share" in url_lower:
+                    captured_requests.append(f"{response.status} {response.url}")
+
+            page.on("response", log_response)
+
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-
-            # Wait for the React app's boot placeholder to be removed,
-            # which signals the real content has mounted.
-            try:
-                await page.wait_for_function(
-                    "() => !document.body.hasAttribute('data-desktop-boot-placeholder') "
-                    "&& !document.documentElement.hasAttribute('data-boot-ui-ready') === false",
-                    timeout=15000,
-                )
-            except Exception:
-                # Fallback: boot placeholder check didn't resolve in time,
-                # continue anyway and try a longer generic wait instead.
-                pass
-
-            # Additional wait for any lingering async rendering / network activity
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass
-
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(8000)
 
             html = await page.content()
             await browser.close()
+
+            print("=== CAPTURED NETWORK REQUESTS ===")
+            for req in captured_requests:
+                print(req)
+            print("==================================")
 
             return html
 
