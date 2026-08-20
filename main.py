@@ -1,5 +1,4 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from services.share_link_service import import_from_share_link, ShareLinkError
@@ -33,8 +32,19 @@ async def import_share_link(payload: ShareLinkRequest):
         }
 
 
-# TEMPORARY DEBUG ENDPOINT - remove once selectors are confirmed
-@app.post("/debug/fetch-html", response_class=HTMLResponse)
+# TEMPORARY DEBUG ENDPOINT - returns a short summary instead of raw HTML
+@app.post("/debug/fetch-html")
 async def debug_fetch_html(payload: ShareLinkRequest):
     html = await fetch_conversation_html(payload.url)
-    return html
+
+    title_start = html.find("<title>")
+    title_end = html.find("</title>")
+    title = html[title_start + 7:title_end] if title_start != -1 else "Not found"
+
+    return {
+        "html_length": len(html),
+        "page_title": title,
+        "has_cloudflare_challenge": "challenges.cloudflare.com" in html,
+        "has_greeting_placeholder": "How can I help you today" in html,
+        "has_composer": "composer" in html.lower(),
+    }
