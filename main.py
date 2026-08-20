@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from bs4 import BeautifulSoup
+import re
 
 from services.share_link_service import import_from_share_link, ShareLinkError
 from services.conversation_fetcher import fetch_conversation_html
@@ -59,5 +61,24 @@ async def debug_fetch_html(payload: ShareLinkRequest):
     except ParseError as e:
         result["parse_success"] = False
         result["parse_error"] = str(e)
+
+    # Find all unique data-* attribute names anywhere in the HTML
+    data_attrs = sorted(set(re.findall(r'data-[a-z-]+(?==)', html)))
+    result["data_attributes_found"] = data_attrs[:40]
+
+    # Find elements whose text content contains "what's up" or "yo" (case-insensitive)
+    soup = BeautifulSoup(html, "html.parser")
+    hits = []
+    for el in soup.find_all(True):
+        text = el.get_text(strip=True)
+        if text and len(text) < 300 and re.search(r"what.?s up|^\W*yo\W*$", text, re.IGNORECASE):
+            hits.append({
+                "tag": el.name,
+                "attrs": dict(el.attrs),
+                "text": text[:100],
+            })
+            if len(hits) >= 5:
+                break
+    result["message_element_hits"] = hits
 
     return result
