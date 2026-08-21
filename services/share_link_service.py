@@ -1,8 +1,7 @@
 import requests
 
 from services.link_detector import detect_platform
-from services.conversation_fetcher import fetch_conversation_html, FetchError
-from services.conversation_parser import parse_conversation, ParseError
+from services.conversation_fetcher import fetch_conversation_text, FetchError
 
 
 class ShareLinkError(Exception):
@@ -19,7 +18,18 @@ def check_network() -> bool:
         return False
 
 
-async def import_from_share_link(url: str) -> list[dict]:
+async def import_from_share_link(url: str) -> str:
+    """
+    Runs the import pipeline:
+    - check network
+    - check link is supported
+    - fetch the rendered page's visible text
+
+    Returns the raw visible conversation text (a single string).
+    Splitting this into individual messages happens later, once we
+    can see real output and confirm the actual format each platform
+    renders in.
+    """
     print(f"[IMPORT] Starting import for URL: {url}")
 
     if not check_network():
@@ -34,17 +44,14 @@ async def import_from_share_link(url: str) -> list[dict]:
     print(f"[IMPORT] Detected platform: {platform}")
 
     try:
-        html = await fetch_conversation_html(url)
-        print(f"[IMPORT] Fetch succeeded, HTML length: {len(html)}")
+        text = await fetch_conversation_text(url)
+        print(f"[IMPORT] Fetch succeeded, text length: {len(text)}")
     except FetchError as e:
         print(f"[IMPORT] Fetch failed: {e}")
         raise ShareLinkError("Couldn't read this link")
 
-    try:
-        messages = parse_conversation(platform, html)
-        print(f"[IMPORT] Parse succeeded, found {len(messages)} messages")
-    except ParseError as e:
-        print(f"[IMPORT] Parse failed: {e}")
+    if not text:
+        print("[IMPORT] Fetch returned empty text")
         raise ShareLinkError("Couldn't read this link")
 
-    return messages
+    return text

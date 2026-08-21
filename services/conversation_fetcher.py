@@ -8,11 +8,13 @@ class FetchError(Exception):
     pass
 
 
-async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
-    console_errors = []
-    failed_requests = []
-    page_errors = []
-
+async def fetch_conversation_text(url: str, timeout_ms: int = 20000) -> str:
+    """
+    Renders the page with a real headless browser and returns the visible
+    rendered TEXT (document.body.innerText) — matching what a real user
+    would actually see on screen.
+    """
+    browser = None
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -30,64 +32,14 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
             page = await context.new_page()
             await stealth_async(page)
 
-            def on_console(msg):
-                if msg.type == "error":
-                    console_errors.append(msg.text)
+            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
 
-            def on_page_error(exc):
-                page_errors.append(str(exc))
+            text = await page.evaluate("() => document.body.innerText")
 
-            def on_request_failed(request):
-                failed_requests.append(f"{request.method} {request.url} - {request.failure}")
-
-            page.on("console", on_console)
-            page.on("pageerror", on_page_error)
-            page.on("requestfailed", on_request_failed)
-
-            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-
-            selectors_to_try = [
-                '[data-testid^="conversation-turn"]',
-                '[data-message-author-role]',
-                'article',
-                '[data-testid="user-message"]',
-                '[data-testid="assistant-message"]',
-            ]
-
-            found_selector = None
-            for selector in selectors_to_try:
-                try:
-                    await page.wait_for_selector(selector, timeout=6000)
-                    found_selector = selector
-                    print(f"[FETCH] Found content via selector: {selector}")
-                    break
-                except Exception:
-                    continue
-
-            if not found_selector:
-                print("[FETCH] No known message selector appeared, falling back to flat wait")
-                await page.wait_for_timeout(8000)
-            else:
-                await page.wait_for_timeout(2000)
-
-            html = await page.content()
             await browser.close()
+            browser = None
 
-            print("=== BROWSER CONSOLE ERRORS ===")
-            print(f"Count: {len(console_errors)}")
-            for err in console_errors[:20]:
-                print(err)
-            print("=== PAGE ERRORS (uncaught exceptions) ===")
-            print(f"Count: {len(page_errors)}")
-            for err in page_errors[:20]:
-                print(err)
-            print("=== FAILED NETWORK REQUESTS ===")
-            print(f"Count: {len(failed_requests)}")
-            for req in failed_requests[:20]:
-                print(req)
-            print("===============================")
-
-            return html
+            return text.strip() if text else ""
 
     except Exception as e:
         print("=== FETCH ERROR ===")
@@ -97,3 +49,9 @@ async def fetch_conversation_html(url: str, timeout_ms: int = 30000) -> str:
         traceback.print_exc()
         print("===================")
         raise FetchError(f"Could not read this link: {e}")
+    finally:
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
