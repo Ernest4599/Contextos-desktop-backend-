@@ -62,32 +62,26 @@ async def debug_fetch_html(payload: ShareLinkRequest):
         result["parse_success"] = False
         result["parse_error"] = str(e)
 
-    # Find all unique data-* attribute names anywhere in the HTML
     data_attrs = sorted(set(re.findall(r'data-[a-z-]+(?==)', html)))
     result["data_attributes_found"] = data_attrs[:40]
 
-    # Find elements whose text content contains "what's up" or "yo" (case-insensitive)
     soup = BeautifulSoup(html, "html.parser")
-    hits = []
-    for el in soup.find_all(True):
-        text = el.get_text(strip=True)
-        if text and len(text) < 300 and re.search(r"what.?s up|^\W*yo\W*$", text, re.IGNORECASE):
-            hits.append({
-                "tag": el.name,
-                "attrs": dict(el.attrs),
-                "text": text[:100],
-            })
-            if len(hits) >= 5:
-                break
-    result["message_element_hits"] = hits
 
-    # Raw string search: does "what" appear ANYWHERE in the raw HTML text,
-    # including inside <script> tags / JSON blobs?
-    raw_match_index = html.lower().find("what")
-    if raw_match_index != -1:
-        result["raw_html_contains_what"] = True
-        result["raw_html_snippet_around_what"] = html[max(0, raw_match_index - 150):raw_match_index + 150]
-    else:
-        result["raw_html_contains_what"] = False
+    # Total visible text on the page (a rough gauge of "is there real content
+    # rendered here, or just an empty app shell?")
+    body = soup.find("body")
+    body_text = body.get_text(separator=" ", strip=True) if body else ""
+    result["body_visible_text_length"] = len(body_text)
+    result["body_visible_text_preview"] = body_text[:500]
+
+    # Search for distinctive words from the page's own title inside the body.
+    # If the title reflects the real conversation but these words are absent
+    # from the body, the actual message content never rendered into the DOM.
+    title_words = [w.strip("@.,!?") for w in title.split() if len(w.strip("@.,!?")) > 4]
+    title_words = [w for w in title_words if w.lower() not in ("chatgpt", "claude", "gemini")]
+    word_hits = {}
+    for word in title_words[:5]:
+        word_hits[word] = word.lower() in body_text.lower()
+    result["title_words_found_in_body"] = word_hits
 
     return result
