@@ -1,13 +1,17 @@
 """
-Tiered share-link fetch strategy, matching the approach proven to work
-in ContextOS mobile's backend:
+Tiered share-link fetch strategy:
 
   1. Plain HTTP fetch + strip HTML tags with regex (cheap, fast, no
      browser needed).
-  2. If that's too short, scan embedded JSON <script> tags for any
-     readable strings.
-  3. Only if both fail: render with a real headless browser (handled
-     separately in conversation_fetcher.py).
+  2. If that's too short, scan embedded JSON <script> tags for
+     message-SHAPED data (role + content pairs) — much more precise
+     than collecting any readable string, which pulls in unrelated
+     page config (feature flags, UI copy, validation regexes, etc.).
+  3. As a last, looser fallback: collect any readable string from
+     JSON blobs, in case the real content isn't in a recognizable
+     message shape.
+  4. Only if all of the above fail: render with a real headless
+     browser (handled separately in conversation_fetcher.py).
 """
 from __future__ import annotations
 
@@ -16,6 +20,8 @@ import re
 from typing import List, Optional
 
 import requests
+
+from services.json_heuristics import best_message_list
 
 MIN_REAL_CONTENT_CHARS = 150
 
@@ -41,6 +47,8 @@ def strip_html_tags(html: str) -> str:
 
 
 def collect_readable_strings(value, out: List[str], depth: int = 0) -> None:
+    """Loose fallback: any string with a space and length > 15.
+    Noisy — only used as a last resort after shape-based detection fails."""
     if depth > 12 or len(out) > 500:
         return
 
@@ -100,7 +108,26 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
     if len(stripped) >= MIN_REAL_CONTENT_CHARS:
         return stripped
 
+    # Tier 2: shape-based JSON detection (role + content pairs) —
+    # precise, filters out unrelated page config automatically.
     json_blocks = _JSON_SCRIPT_RE.findall(html)
+    print(f"[FETCH] Found {len(json_blocks)} JSON script blocks, trying shape-based detection")
+
+    for block in json_blocks:
+        try:
+            parsed = json.loads(block)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        messages = best_message_list(parsed)
+        if messages:
+            text = "\n\n".join(f"{role}: {content}" for role, content in messages)
+            print(f"[FETCH] Shape-based detection found {len(messages)} messages, {len(text)} characters")
+            if len(text) >= MIN_REAL_CONTENT_CHARS:
+                return text
+
+    # Tier 3: loose fallback — any readable string, last resort before
+    # the headless browser tier.
+    print("[FETCH] Shape-based detection found nothing, falling back to loose string collection")
     extracted: List[str] = []
     for block in json_blocks:
         try:
@@ -110,10 +137,7 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
             continue
 
     from_json = "\n".join(extracted).strip()
-    print(
-        f"[FETCH] JSON-hydration found {len(json_blocks)} JSON blocks, "
-        f"{len(extracted)} readable strings, {len(from_json)} total characters"
-    )
+    print(f"[FETCH] Loose collection got {len(extracted)} strings, {len(from_json)} characters")
 
     if len(from_json) >= MIN_REAL_CONTENT_CHARS:
         return from_json
