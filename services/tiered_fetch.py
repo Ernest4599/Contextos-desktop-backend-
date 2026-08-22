@@ -3,15 +3,20 @@ Tiered share-link fetch strategy:
 
   1. Plain HTTP fetch + strip HTML tags with regex.
   2. If that's too short, scan embedded JSON <script> tags for
-     message-SHAPED data (role + content pairs).
-  3. Only if both fail: render with a real headless browser (handled
-     separately in conversation_fetcher.py).
+     message-SHAPED data (role + content pairs) — precise, tried first.
+  3. If that also fails, collect any readable string from the same
+     JSON blobs, deduplicated (removes repetitive unrelated page
+     config) and with a generous cap (removes an earlier bug where a
+     low cap could fill up with noise before ever reaching real
+     content deeper in the JSON tree).
+  4. Only if all of the above fail: render with a real headless
+     browser (handled separately in conversation_fetcher.py).
 """
 from __future__ import annotations
 
 import json
 import re
-from typing import Optional
+from typing import List, Optional
 
 import requests
 
@@ -40,6 +45,35 @@ def strip_html_tags(html: str) -> str:
     return text.strip()
 
 
+def collect_readable_strings(value, out: List[str], depth: int = 0) -> None:
+    """Loose fallback: any string with a space and length > 15.
+    Cap raised to 20000 (was 500) — the old low cap could fill up
+    entirely with unrelated page config before ever reaching real
+    content deeper in the JSON tree."""
+    if depth > 12 or len(out) > 20000:
+        return
+
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if (trimmed.startswith("{") and trimmed.endswith("}")) or (
+            trimmed.startswith("[") and trimmed.endswith("]")
+        ):
+            try:
+                nested = json.loads(trimmed)
+                collect_readable_strings(nested, out, depth + 1)
+                return
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if len(value) > 15 and re.search(r"\s", value):
+            out.append(value)
+    elif isinstance(value, list):
+        for item in value:
+            collect_readable_strings(item, out, depth + 1)
+    elif isinstance(value, dict):
+        for item in value.values():
+            collect_readable_strings(item, out, depth + 1)
+
+
 def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
     try:
         response = requests.get(
@@ -58,9 +92,7 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
         return None
 
     print(f"[FETCH] Plain fetch HTTP status: {response.status_code}")
-    print(f"[FETCH] Response headers: {dict(response.headers)}")
     print(f"[FETCH] Raw response length: {len(response.text)}")
-    print(f"[FETCH] Raw response (first 1000 chars): {response.text[:1000]}")
 
     if response.status_code in (401, 403):
         print(f"[FETCH] Plain fetch: page requires login ({response.status_code})")
@@ -81,8 +113,9 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
         return stripped
 
     json_blocks = _JSON_SCRIPT_RE.findall(html)
-    print(f"[FETCH] Found {len(json_blocks)} JSON script blocks, trying shape-based detection")
+    print(f"[FETCH] Found {len(json_blocks)} JSON script blocks")
 
+    # Tier 2: shape-based detection (precise)
     for block in json_blocks:
         try:
             parsed = json.loads(block)
@@ -94,6 +127,25 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
             print(f"[FETCH] Shape-based detection found {len(messages)} messages, {len(text)} characters")
             if len(text) >= MIN_REAL_CONTENT_CHARS:
                 return text
+
+    # Tier 3: loose collection, deduplicated, generous cap
+    print("[FETCH] Shape-based detection found nothing, trying loose string collection")
+    extracted: List[str] = []
+    for block in json_blocks:
+        try:
+            parsed = json.loads(block)
+            collect_readable_strings(parsed, extracted)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    unique_strings = list(dict.fromkeys(extracted))  # dedupe, preserve order
+    print(f"[FETCH] Collected {len(extracted)} strings, {len(unique_strings)} unique")
+
+    from_json = "\n".join(unique_strings).strip()
+    print(f"[FETCH] Loose collection (deduped) got {len(from_json)} characters")
+
+    if len(from_json) >= MIN_REAL_CONTENT_CHARS:
+        return from_json
 
     print("[FETCH] No usable content found in plain fetch tiers")
     return None
