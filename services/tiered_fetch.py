@@ -1,23 +1,17 @@
 """
 Tiered share-link fetch strategy:
 
-  1. Plain HTTP fetch + strip HTML tags with regex (cheap, fast, no
-     browser needed).
+  1. Plain HTTP fetch + strip HTML tags with regex.
   2. If that's too short, scan embedded JSON <script> tags for
-     message-SHAPED data (role + content pairs) — much more precise
-     than collecting any readable string, which pulls in unrelated
-     page config (feature flags, UI copy, validation regexes, etc.).
-  3. As a last, looser fallback: collect any readable string from
-     JSON blobs, in case the real content isn't in a recognizable
-     message shape.
-  4. Only if all of the above fail: render with a real headless
-     browser (handled separately in conversation_fetcher.py).
+     message-SHAPED data (role + content pairs).
+  3. Only if both fail: render with a real headless browser (handled
+     separately in conversation_fetcher.py).
 """
 from __future__ import annotations
 
 import json
 import re
-from typing import List, Optional
+from typing import Optional
 
 import requests
 
@@ -44,33 +38,6 @@ def strip_html_tags(html: str) -> str:
     text = _NBSP_RE.sub(" ", text)
     text = _WHITESPACE_RE.sub(" ", text)
     return text.strip()
-
-
-def collect_readable_strings(value, out: List[str], depth: int = 0) -> None:
-    """Loose fallback: any string with a space and length > 15.
-    Noisy — only used as a last resort after shape-based detection fails."""
-    if depth > 12 or len(out) > 500:
-        return
-
-    if isinstance(value, str):
-        trimmed = value.strip()
-        if (trimmed.startswith("{") and trimmed.endswith("}")) or (
-            trimmed.startswith("[") and trimmed.endswith("]")
-        ):
-            try:
-                nested = json.loads(trimmed)
-                collect_readable_strings(nested, out, depth + 1)
-                return
-            except (json.JSONDecodeError, ValueError):
-                pass
-        if len(value) > 15 and re.search(r"\s", value):
-            out.append(value)
-    elif isinstance(value, list):
-        for item in value:
-            collect_readable_strings(item, out, depth + 1)
-    elif isinstance(value, dict):
-        for item in value.values():
-            collect_readable_strings(item, out, depth + 1)
 
 
 def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
@@ -108,8 +75,6 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
     if len(stripped) >= MIN_REAL_CONTENT_CHARS:
         return stripped
 
-    # Tier 2: shape-based JSON detection (role + content pairs) —
-    # precise, filters out unrelated page config automatically.
     json_blocks = _JSON_SCRIPT_RE.findall(html)
     print(f"[FETCH] Found {len(json_blocks)} JSON script blocks, trying shape-based detection")
 
@@ -125,21 +90,5 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
             if len(text) >= MIN_REAL_CONTENT_CHARS:
                 return text
 
-    # Tier 3: loose fallback — any readable string, last resort before
-    # the headless browser tier.
-    print("[FETCH] Shape-based detection found nothing, falling back to loose string collection")
-    extracted: List[str] = []
-    for block in json_blocks:
-        try:
-            parsed = json.loads(block)
-            collect_readable_strings(parsed, extracted)
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    from_json = "\n".join(extracted).strip()
-    print(f"[FETCH] Loose collection got {len(extracted)} strings, {len(from_json)} characters")
-
-    if len(from_json) >= MIN_REAL_CONTENT_CHARS:
-        return from_json
-
+    print("[FETCH] No usable content found in plain fetch tiers")
     return None

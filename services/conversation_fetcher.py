@@ -1,6 +1,5 @@
 import traceback
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
 
 from services.tiered_fetch import try_plain_fetch, MIN_REAL_CONTENT_CHARS
 
@@ -10,24 +9,26 @@ class FetchError(Exception):
     pass
 
 
-async def _render_with_browser(url: str, timeout_ms: int = 20000) -> str:
+async def _render_with_browser(url: str, timeout_ms: int = 25000) -> str:
+    """
+    Uses Firefox instead of Chromium — Firefox's automation protocol
+    isn't CDP (Chrome DevTools Protocol), which is what our earlier
+    Chromium attempts got detected through (uncaught JS errors like
+    'utils is not defined' appeared specifically when using Chromium,
+    consistent with CDP-based detection).
+    """
     browser = None
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            browser = await p.firefox.launch(headless=True)
             context = await browser.new_context(
                 user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
+                    "Mozilla/5.0 (Windows NT 10.0; rv:121.0) "
+                    "Gecko/20100101 Firefox/121.0"
                 ),
                 viewport={"width": 1280, "height": 800},
             )
             page = await context.new_page()
-            await stealth_async(page)
 
             await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
             text = await page.evaluate("() => document.body.innerText")
@@ -45,17 +46,13 @@ async def _render_with_browser(url: str, timeout_ms: int = 20000) -> str:
 
 
 async def fetch_conversation_text(url: str) -> str:
-    """
-    Tiered fetch: try cheap plain-HTTP methods first, only fall back
-    to a real headless browser as a last resort.
-    """
-    print("[FETCH] Trying Tier 1/2: plain fetch + JSON hydration")
+    print("[FETCH] Trying Tier 1/2: plain fetch + shape-based JSON detection")
     text = try_plain_fetch(url)
     if text:
         print(f"[FETCH] Succeeded via plain fetch tier, {len(text)} characters")
         return text
 
-    print("[FETCH] Cheap tiers failed, falling back to headless browser (last resort)")
+    print("[FETCH] Cheap tiers failed, falling back to headless browser (Firefox)")
     try:
         rendered = await _render_with_browser(url)
         print(f"[FETCH] Headless render got {len(rendered)} characters (need {MIN_REAL_CONTENT_CHARS}+)")
