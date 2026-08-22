@@ -57,6 +57,11 @@ def try_plain_fetch(url: str, timeout_s: int = 8) -> Optional[str]:
         print(f"[FETCH] Plain fetch failed: {e}")
         return None
 
+    print(f"[FETCH] Plain fetch HTTP status: {response.status_code}")
+    print(f"[FETCH] Response headers: {dict(response.headers)}")
+    print(f"[FETCH] Raw response length: {len(response.text)}")
+    print(f"[FETCH] Raw response (first 1000 chars): {response.text[:1000]}")
+
     if response.status_code in (401, 403):
         print(f"[FETCH] Plain fetch: page requires login ({response.status_code})")
         return None
