@@ -1,14 +1,10 @@
+import base64
 import traceback
 from playwright.async_api import async_playwright
 from playwright_stealth import stealth_async
 
 from services.tiered_fetch import try_plain_fetch, MIN_REAL_CONTENT_CHARS
 
-# Runs BEFORE any page JavaScript executes, patching properties that
-# automated browsers expose by default and that sites commonly check
-# for. This targets the specific "navigator.webdriver" flag, which
-# Playwright sets to true unless explicitly patched — many sites use
-# this exact property as their primary automation signal.
 _STEALTH_INIT_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
@@ -28,7 +24,7 @@ class FetchError(Exception):
     pass
 
 
-async def _render_with_browser(url: str, timeout_ms: int = 25000) -> str:
+async def _render_with_browser(url: str, timeout_ms: int = 25000, capture_screenshot: bool = False):
     browser = None
     try:
         async with async_playwright() as p:
@@ -49,8 +45,6 @@ async def _render_with_browser(url: str, timeout_ms: int = 25000) -> str:
                 locale="en-US",
             )
 
-            # Apply the init script to every page in this context,
-            # BEFORE stealth_async, so both layers of patching are active.
             await context.add_init_script(_STEALTH_INIT_SCRIPT)
 
             page = await context.new_page()
@@ -64,6 +58,11 @@ async def _render_with_browser(url: str, timeout_ms: int = 25000) -> str:
 
             text = await page.evaluate("() => document.body.innerText")
 
+            screenshot_b64 = None
+            if capture_screenshot:
+                screenshot_bytes = await page.screenshot(full_page=False)
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
             print(f"[FETCH] Console errors during render: {len(console_errors)}")
             for err in console_errors[:10]:
                 print(f"[FETCH]   {err}")
@@ -71,7 +70,11 @@ async def _render_with_browser(url: str, timeout_ms: int = 25000) -> str:
             await browser.close()
             browser = None
 
-            return text.strip() if text else ""
+            result_text = text.strip() if text else ""
+
+            if capture_screenshot:
+                return result_text, screenshot_b64
+            return result_text
     finally:
         if browser:
             try:
@@ -87,7 +90,7 @@ async def fetch_conversation_text(url: str) -> str:
         print(f"[FETCH] Succeeded via plain fetch tier, {len(text)} characters")
         return text
 
-    print("[FETCH] Cheap tiers failed, falling back to headless browser (Chromium + navigator.webdriver patch)")
+    print("[FETCH] Cheap tiers failed, falling back to headless browser")
     try:
         rendered = await _render_with_browser(url)
         print(f"[FETCH] Headless render got {len(rendered)} characters (need {MIN_REAL_CONTENT_CHARS}+)")
@@ -102,3 +105,8 @@ async def fetch_conversation_text(url: str) -> str:
         print("===================================")
 
     raise FetchError("Could not read this link")
+
+
+async def fetch_screenshot_debug(url: str):
+    """Debug helper: renders the page and returns (text, screenshot_base64)."""
+    return await _render_with_browser(url, capture_screenshot=True)

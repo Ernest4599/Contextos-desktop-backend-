@@ -1,7 +1,9 @@
-from fastapi import FastAPI
+import base64
+from fastapi import FastAPI, Response
 from pydantic import BaseModel
 
 from services.share_link_service import import_from_share_link, ShareLinkError
+from services.conversation_fetcher import fetch_screenshot_debug
 
 app = FastAPI(title="ContextOS Backend")
 
@@ -30,3 +32,11 @@ async def import_share_link(payload: ShareLinkRequest):
             "success": False,
             "error": e.message,
         }
+
+
+# TEMPORARY DEBUG: renders the page and returns an actual screenshot image
+@app.post("/debug/screenshot")
+async def debug_screenshot(payload: ShareLinkRequest):
+    text, screenshot_b64 = await fetch_screenshot_debug(payload.url)
+    image_bytes = base64.b64decode(screenshot_b64)
+    return Response(content=image_bytes, media_type="image/png")
