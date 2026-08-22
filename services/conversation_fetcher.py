@@ -1,7 +1,26 @@
 import traceback
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 from services.tiered_fetch import try_plain_fetch, MIN_REAL_CONTENT_CHARS
+
+# Runs BEFORE any page JavaScript executes, patching properties that
+# automated browsers expose by default and that sites commonly check
+# for. This targets the specific "navigator.webdriver" flag, which
+# Playwright sets to true unless explicitly patched — many sites use
+# this exact property as their primary automation signal.
+_STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+window.chrome = { runtime: {} };
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+  parameters.name === 'notifications'
+    ? Promise.resolve({ state: Notification.permission })
+    : originalQuery(parameters)
+);
+"""
 
 
 class FetchError(Exception):
@@ -10,28 +29,44 @@ class FetchError(Exception):
 
 
 async def _render_with_browser(url: str, timeout_ms: int = 25000) -> str:
-    """
-    Uses Firefox instead of Chromium — Firefox's automation protocol
-    isn't CDP (Chrome DevTools Protocol), which is what our earlier
-    Chromium attempts got detected through (uncaught JS errors like
-    'utils is not defined' appeared specifically when using Chromium,
-    consistent with CDP-based detection).
-    """
     browser = None
     try:
         async with async_playwright() as p:
-            browser = await p.firefox.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                ],
+            )
             context = await browser.new_context(
                 user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; rv:121.0) "
-                    "Gecko/20100101 Firefox/121.0"
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 800},
+                locale="en-US",
             )
+
+            # Apply the init script to every page in this context,
+            # BEFORE stealth_async, so both layers of patching are active.
+            await context.add_init_script(_STEALTH_INIT_SCRIPT)
+
             page = await context.new_page()
+            await stealth_async(page)
+
+            console_errors = []
+            page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
 
             await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            await page.wait_for_timeout(3000)
+
             text = await page.evaluate("() => document.body.innerText")
+
+            print(f"[FETCH] Console errors during render: {len(console_errors)}")
+            for err in console_errors[:10]:
+                print(f"[FETCH]   {err}")
 
             await browser.close()
             browser = None
@@ -52,7 +87,7 @@ async def fetch_conversation_text(url: str) -> str:
         print(f"[FETCH] Succeeded via plain fetch tier, {len(text)} characters")
         return text
 
-    print("[FETCH] Cheap tiers failed, falling back to headless browser (Firefox)")
+    print("[FETCH] Cheap tiers failed, falling back to headless browser (Chromium + navigator.webdriver patch)")
     try:
         rendered = await _render_with_browser(url)
         print(f"[FETCH] Headless render got {len(rendered)} characters (need {MIN_REAL_CONTENT_CHARS}+)")
