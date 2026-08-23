@@ -1,10 +1,8 @@
-import base64
-from urllib.parse import unquote
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from pydantic import BaseModel
 
 from services.share_link_service import import_from_share_link, ShareLinkError
-from services.conversation_fetcher import fetch_screenshot_debug
+from services.chatgpt_parser import parse_chatgpt_share
 
 app = FastAPI(title="ContextOS Backend")
 
@@ -35,10 +33,19 @@ async def import_share_link(payload: ShareLinkRequest):
         }
 
 
-# TEMPORARY DEBUG: open directly in a browser tab as an image
-@app.get("/debug/screenshot")
-async def debug_screenshot_get(url: str):
-    decoded_url = unquote(url)
-    text, screenshot_b64 = await fetch_screenshot_debug(decoded_url)
-    image_bytes = base64.b64decode(screenshot_b64)
-    return Response(content=image_bytes, media_type="image/png")
+# TEST: new ChatGPT-specific parser based on ChatPeek's proven approach
+@app.post("/debug/chatgpt-parse")
+async def debug_chatgpt_parse(payload: ShareLinkRequest):
+    try:
+        messages = parse_chatgpt_share(payload.url)
+        return {
+            "success": True,
+            "message_count": len(messages),
+            "messages": messages,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
