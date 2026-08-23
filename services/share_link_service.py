@@ -3,6 +3,8 @@ import requests
 from services.link_detector import detect_platform
 from services.conversation_fetcher import fetch_conversation_text, FetchError
 from services.chatgpt_parser import parse_chatgpt_share
+from services.claude_parser import parse_claude_share
+from services.gemini_parser import parse_gemini_share
 
 
 class ShareLinkError(Exception):
@@ -19,17 +21,14 @@ def check_network() -> bool:
         return False
 
 
-async def import_from_share_link(url: str) -> list[dict]:
-    """
-    Runs the import pipeline:
-    - check network
-    - check link is supported
-    - fetch the conversation, using a platform-specific parser where
-      we have a proven one (ChatGPT), falling back to the generic
-      tiered fetch otherwise.
+PLATFORM_PARSERS = {
+    "chatgpt": parse_chatgpt_share,
+    "claude": parse_claude_share,
+    "gemini": parse_gemini_share,
+}
 
-    Returns a list of {"role": ..., "text": ...} messages.
-    """
+
+async def import_from_share_link(url: str) -> list[dict]:
     print(f"[IMPORT] Starting import for URL: {url}")
 
     if not check_network():
@@ -43,12 +42,13 @@ async def import_from_share_link(url: str) -> list[dict]:
         raise ShareLinkError("Unsupported link")
     print(f"[IMPORT] Detected platform: {platform}")
 
-    if platform == "chatgpt":
+    parser = PLATFORM_PARSERS.get(platform)
+    if parser:
         try:
-            messages = parse_chatgpt_share(url)
-            print(f"[IMPORT] ChatGPT parser succeeded, {len(messages)} messages")
+            messages = parser(url)
+            print(f"[IMPORT] {platform} parser succeeded, {len(messages)} messages")
         except Exception as e:
-            print(f"[IMPORT] ChatGPT parser failed: {e}")
+            print(f"[IMPORT] {platform} parser failed: {e}")
             raise ShareLinkError("Couldn't read this link")
 
         if not messages:
@@ -56,7 +56,7 @@ async def import_from_share_link(url: str) -> list[dict]:
 
         return messages
 
-    # Fallback for platforms without a dedicated parser yet
+    # Fallback for platforms without a dedicated parser yet (copilot, grok)
     try:
         text = await fetch_conversation_text(url)
         print(f"[IMPORT] Generic fetch succeeded, text length: {len(text)}")
