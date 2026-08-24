@@ -4,6 +4,7 @@ from services.link_detector import detect_platform
 from services.conversation_fetcher import fetch_conversation_text, FetchError
 from services.chatgpt_parser import parse_chatgpt_share
 from services.claude_parser import parse_claude_share
+from services.claude_playwright_parser import extract_claude_share, ClaudeExtractError
 from services.gemini_parser import parse_gemini_share
 
 
@@ -21,11 +22,29 @@ def check_network() -> bool:
         return False
 
 
-PLATFORM_PARSERS = {
+SYNC_PARSERS = {
     "chatgpt": parse_chatgpt_share,
-    "claude": parse_claude_share,
     "gemini": parse_gemini_share,
 }
+
+
+async def _import_claude(url: str) -> list[dict]:
+    try:
+        messages = parse_claude_share(url)
+        if messages:
+            print(f"[IMPORT] claude sync parser succeeded, {len(messages)} messages")
+            return messages
+        print("[IMPORT] claude sync parser returned no messages, trying Playwright fallback")
+    except Exception as e:
+        print(f"[IMPORT] claude sync parser failed: {e}, trying Playwright fallback")
+
+    try:
+        messages = await extract_claude_share(url)
+        print(f"[IMPORT] claude Playwright fallback succeeded, {len(messages)} messages")
+        return messages
+    except ClaudeExtractError as e:
+        print(f"[IMPORT] claude Playwright fallback failed: {e}")
+        raise ShareLinkError("Couldn't read this link")
 
 
 async def import_from_share_link(url: str) -> list[dict]:
@@ -42,7 +61,10 @@ async def import_from_share_link(url: str) -> list[dict]:
         raise ShareLinkError("Unsupported link")
     print(f"[IMPORT] Detected platform: {platform}")
 
-    parser = PLATFORM_PARSERS.get(platform)
+    if platform == "claude":
+        return await _import_claude(url)
+
+    parser = SYNC_PARSERS.get(platform)
     if parser:
         try:
             messages = parser(url)
