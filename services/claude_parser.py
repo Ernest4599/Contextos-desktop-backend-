@@ -1,12 +1,11 @@
 """
-Claude share-link parser. Tries two strategies:
+Claude share-link parser. Tries multiple strategies in order:
   1. Direct API (GET /api/chat_snapshots/{uuid}) - fast, clean JSON,
      but can return 403 if it requires session context we don't have.
-  2. Fallback: parse the actual share PAGE, scanning every
-     streamController.enqueue(...) call in every <script> tag for a
-     JSON array payload (ported from a ChatGPT-share scraping
-     approach - unverified whether Claude's page is structured the
-     same way, so treat this path as best-effort).
+  2. Fallback: parse the actual share PAGE, scanning for common
+     framework data-embedding patterns:
+       a) streamController.enqueue(...) - React Router / Remix style
+       b) self.__next_f.push([...]) - Next.js App Router style
 """
 from __future__ import annotations
 
@@ -40,12 +39,6 @@ _SHARE_PATH_RE = re.compile(
 
 
 def _extract_uuid(url: str) -> str:
-    """Validate the host is actually claude.ai and pull a well-formed
-    UUID out of the /share/<uuid> path. This matters because we later
-    fetch a URL derived from this input - a naive substring regex would
-    let something like https://evil.example/?u=claude.ai/share/<uuid>
-    be treated as a legitimate claude.ai link.
-    """
     parsed = urlparse(url)
     host = (parsed.netloc or "").lower()
     if host not in ("claude.ai", "www.claude.ai"):
@@ -127,9 +120,6 @@ def _find_text_strings(obj: Any, out: List[str], depth: int = 0) -> None:
 
 
 def _iter_enqueue_arrays(script_text: str) -> Iterator[list]:
-    """Yield every JSON-array payload found across all
-    streamController.enqueue(...) calls in this script.
-    """
     call_marker = "streamController.enqueue("
     decoder = json.JSONDecoder()
     idx = 0
@@ -165,6 +155,40 @@ def _iter_enqueue_arrays(script_text: str) -> Iterator[list]:
         idx = region_end
 
 
+def _iter_next_f_push_arrays(script_text: str) -> Iterator[Any]:
+    """Yield every payload found in self.__next_f.push([id, data])
+    calls - Next.js App Router's streaming data format."""
+    call_marker = "self.__next_f.push("
+    decoder = json.JSONDecoder()
+    idx = 0
+    while True:
+        call_start = script_text.find(call_marker, idx)
+        if call_start == -1:
+            return
+        args_start = call_start + len(call_marker)
+        try:
+            parsed, end_offset = decoder.raw_decode(script_text, args_start)
+        except json.JSONDecodeError:
+            idx = args_start + 1
+            continue
+        idx = end_offset
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, str):
+                    stripped = item.strip()
+                    # Next.js often prefixes the payload with a digit
+                    # and colon before the actual JSON, e.g. "3:[...]"
+                    colon_match = re.match(r"^\d+:(.*)$", stripped, re.DOTALL)
+                    candidate = colon_match.group(1) if colon_match else stripped
+                    if candidate.startswith("[") or candidate.startswith("{"):
+                        try:
+                            yield json.loads(candidate)
+                        except json.JSONDecodeError:
+                            continue
+                elif isinstance(item, (list, dict)):
+                    yield item
+
+
 def _try_page_scan(uuid: str, timeout: int) -> List[Dict[str, str]]:
     canonical_url = f"https://claude.ai/share/{uuid}"
     response = requests.get(canonical_url, headers=DEFAULT_HEADERS, timeout=timeout)
@@ -174,18 +198,31 @@ def _try_page_scan(uuid: str, timeout: int) -> List[Dict[str, str]]:
     scripts = _extract_scripts(html)
     logger.info("page fetch: %d chars, %d <script> tags", len(html), len(scripts))
 
+    has_stream_controller = any("streamController.enqueue" in s for s in scripts)
+    has_next_f = any("self.__next_f.push" in s for s in scripts)
+    logger.info(
+        "pattern check: streamController.enqueue=%s, self.__next_f.push=%s",
+        has_stream_controller, has_next_f,
+    )
+
     all_strings: List[str] = []
+
     for script_text in scripts:
-        if "streamController.enqueue" not in script_text:
-            continue
-        for array_payload in _iter_enqueue_arrays(script_text):
-            _find_text_strings(array_payload, all_strings)
+        if "streamController.enqueue" in script_text:
+            for array_payload in _iter_enqueue_arrays(script_text):
+                _find_text_strings(array_payload, all_strings)
+
+    if not all_strings:
+        for script_text in scripts:
+            if "self.__next_f.push" in script_text:
+                for payload in _iter_next_f_push_arrays(script_text):
+                    _find_text_strings(payload, all_strings)
 
     deduped = list(dict.fromkeys(all_strings))
     if deduped:
         logger.info("page scan recovered %d candidate text strings", len(deduped))
     else:
-        logger.warning("no streamController.enqueue payloads yielded usable text")
+        logger.warning("no known embedding pattern yielded usable text")
 
     return [{"role": "raw", "text": s, "source": "page_scan"} for s in deduped]
 
