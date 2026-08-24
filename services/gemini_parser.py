@@ -1,7 +1,7 @@
 """
 Gemini share-link parser, based on a proven working implementation
-using Google's internal 'batchexecute' RPC protocol (confirmed against
-real Gemini share links). No authentication needed, no browser needed.
+using Google's internal 'batchexecute' RPC protocol. No authentication
+needed, no browser needed.
 """
 from __future__ import annotations
 
@@ -20,7 +20,12 @@ DEFAULT_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
 }
 
-_SHARE_ID_RE = re.compile(r"gemini\.google\.com/share/([a-zA-Z0-9]+)")
+# Matches both known share URL formats:
+#   share.gemini.google/<id>
+#   gemini.google.com/share/<id>
+_SHARE_ID_RE = re.compile(
+    r"(?:share\.gemini\.google/|gemini\.google\.com/share/)([a-zA-Z0-9_-]+)"
+)
 
 
 def _extract_share_id(url: str) -> str:
@@ -31,10 +36,6 @@ def _extract_share_id(url: str) -> str:
 
 
 def _parse_batchexecute_response(raw_text: str) -> list:
-    """
-    Google's batchexecute format: a ')]}\'' safety prefix, then
-    alternating lines of [length, json_array] pairs.
-    """
     text = raw_text.strip()
     if text.startswith(")]}'"):
         text = text[4:].strip()
@@ -63,6 +64,7 @@ def _parse_batchexecute_response(raw_text: str) -> list:
 
 def parse_gemini_share(url: str, timeout: int = 20) -> List[Dict[str, str]]:
     share_id = _extract_share_id(url)
+    print(f"[GEMINI] Extracted share ID: {share_id}")
 
     inner_payload = json.dumps([None, share_id, [4]])
     f_req = json.dumps([[["ujx1Bf", inner_payload, None, "generic"]]])
@@ -77,6 +79,9 @@ def parse_gemini_share(url: str, timeout: int = 20) -> List[Dict[str, str]]:
         headers=DEFAULT_HEADERS,
         timeout=timeout,
     )
+    print(f"[GEMINI] Response status: {response.status_code}")
+    print(f"[GEMINI] Response length: {len(response.text)}")
+    print(f"[GEMINI] Response preview: {response.text[:500]}")
     response.raise_for_status()
 
     data = _parse_batchexecute_response(response.text)
