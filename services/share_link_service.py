@@ -5,6 +5,7 @@ from services.conversation_fetcher import fetch_conversation_text, FetchError
 from services.chatgpt_parser import parse_chatgpt_share
 from services.claude_parser import parse_claude_share
 from services.gemini_parser import parse_gemini_share
+from services.perplexity_parser import parse_perplexity_share
 
 
 class ShareLinkError(Exception):
@@ -25,6 +26,7 @@ PLATFORM_PARSERS = {
     "chatgpt": parse_chatgpt_share,
     "claude": parse_claude_share,
     "gemini": parse_gemini_share,
+    "perplexity": parse_perplexity_share,
 }
 
 
