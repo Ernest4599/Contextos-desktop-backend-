@@ -8,6 +8,7 @@ SUPPORTED_PLATFORMS = {
     "gemini.google.com": "gemini",
     "copilot.microsoft.com": "copilot",
     "grok.com": "grok",
+    "chat.deepseek.com": "deepseek",
     "perplexity.ai": "perplexity",
     "meta.ai": "metaai",
 }
