@@ -1,8 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from curl_cffi import requests as crequests
 
 from services.share_link_service import import_from_share_link, ShareLinkError
+from services.paste_validator import validate_pasted_text, PasteValidationError
+from services.message_splitter import split_messages
+from services.file_extractor import extract_file_content, FileExtractionError
+from services.processing_pipeline import run_processing_pipeline
 
 app = FastAPI(title="ContextOS Backend")
 
@@ -30,6 +35,32 @@ async def import_share_link(payload: ShareLinkRequest):
             "success": False,
             "error": e.message,
         }
+
+
+class PasteConversationRequest(BaseModel):
+    text: str
+
+
+@app.post("/process/paste")
+async def process_paste(payload: PasteConversationRequest):
+    try:
+        validated = validate_pasted_text(payload.text)
+    except PasteValidationError as e:
+        return {"success": False, "error": e.message}
+
+    messages = split_messages(validated)
+    return StreamingResponse(run_processing_pipeline(messages), media_type="text/event-stream")
+
+
+@app.post("/process/upload")
+async def process_upload(file: UploadFile = File(...)):
+    raw_bytes = await file.read()
+    try:
+        messages = extract_file_content(file.filename, raw_bytes)
+    except FileExtractionError as e:
+        return {"success": False, "error": e.message}
+
+    return StreamingResponse(run_processing_pipeline(messages), media_type="text/event-stream")
 
 
 # TEMPORARY DEBUG: test multiple curl_cffi impersonate values from Render itself
