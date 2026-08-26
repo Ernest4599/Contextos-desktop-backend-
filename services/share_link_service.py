@@ -6,6 +6,7 @@ from services.chatgpt_parser import parse_chatgpt_share
 from services.claude_parser import parse_claude_share
 from services.gemini_parser import parse_gemini_share
 from services.perplexity_parser import parse_perplexity_share
+from services.metaai_parser import parse_metaai_share
 
 
 class ShareLinkError(Exception):
@@ -27,6 +28,7 @@ PLATFORM_PARSERS = {
     "claude": parse_claude_share,
     "gemini": parse_gemini_share,
     "perplexity": parse_perplexity_share,
+    "metaai": parse_metaai_share,
 }
 
 
@@ -58,7 +60,7 @@ async def import_from_share_link(url: str) -> list[dict]:
 
         return messages
 
-    # Fallback for platforms without a dedicated parser yet (copilot, grok)
+    # Fallback for platforms without a dedicated parser yet
     try:
         text = await fetch_conversation_text(url)
         print(f"[IMPORT] Generic fetch succeeded, text length: {len(text)}")

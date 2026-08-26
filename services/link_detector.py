@@ -9,6 +9,7 @@ SUPPORTED_PLATFORMS = {
     "copilot.microsoft.com": "copilot",
     "grok.com": "grok",
     "perplexity.ai": "perplexity",
+    "meta.ai": "metaai",
 }
 
 
