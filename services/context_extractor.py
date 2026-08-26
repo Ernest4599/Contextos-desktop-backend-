@@ -3,25 +3,14 @@ LLM-based context extraction: takes a list of {role, text} messages and
 produces a structured "Context Package" covering goals, current state,
 decisions, completed work, tasks, constraints, open questions, key facts,
 and the single next action - then fills the continuation template.
-
-Provider is selected via the LLM_PROVIDER env var ("anthropic" | "openai"
-| "gemini"), each reading its own API key from its usual env var. Swapping
-providers on Render is an env var change, no code change. Until a key is
-set, calls raise ExtractionError with a clear "not configured yet" message
-instead of crashing.
 """
 from __future__ import annotations
 
-import json
-import os
 from typing import Any, Dict, List
 
-import requests
+from services.llm_providers import LLMProviderError, call_llm, parse_llm_json
 
-
-class ExtractionError(Exception):
-    pass
-
+ExtractionError = LLMProviderError
 
 SECTIONS = [
     "goals", "current_state", "decisions", "completed_work", "tasks",
@@ -57,115 +46,13 @@ def _messages_to_transcript(messages: List[Dict[str, str]]) -> str:
     return "\n\n".join(lines)
 
 
-def _call_anthropic(transcript: str) -> str:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ExtractionError("ANTHROPIC_API_KEY is not configured yet")
-
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
-            "model": "claude-sonnet-4-6",
-            "max_tokens": 2000,
-            "system": EXTRACTION_SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": transcript}],
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
-    return "".join(parts)
-
-
-def _call_openai(transcript: str) -> str:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise ExtractionError("OPENAI_API_KEY is not configured yet")
-
-    resp = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": "gpt-4o",
-            "max_tokens": 2000,
-            "messages": [
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": transcript},
-            ],
-            "response_format": {"type": "json_object"},
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
-
-
-def _call_gemini(transcript: str) -> str:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ExtractionError("GEMINI_API_KEY is not configured yet")
-
-    resp = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={api_key}",
-        json={
-            "contents": [{"parts": [{"text": transcript}]}],
-            "systemInstruction": {"parts": [{"text": EXTRACTION_SYSTEM_PROMPT}]},
-            "generationConfig": {"responseMimeType": "application/json"},
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
-
-
-_PROVIDERS = {
-    "anthropic": _call_anthropic,
-    "openai": _call_openai,
-    "gemini": _call_gemini,
-}
-
-
-def _parse_llm_json(raw: str) -> Dict[str, Any]:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:]
-        cleaned = cleaned.strip()
-    try:
-        return json.loads(cleaned)
-    except (json.JSONDecodeError, ValueError) as e:
-        raise ExtractionError(f"Model returned non-JSON output: {e}")
-
-
 def extract_context(messages: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    Runs the configured LLM provider once over the full conversation and
-    returns a dict with all 9 sections plus next_action, already parsed.
-    """
-    provider_name = os.environ.get("LLM_PROVIDER", "anthropic").lower()
-    provider_fn = _PROVIDERS.get(provider_name)
-    if provider_fn is None:
-        raise ExtractionError(f"Unknown LLM_PROVIDER: {provider_name!r}")
-
     transcript = _messages_to_transcript(messages)
     if not transcript.strip():
         raise ExtractionError("No message content to extract from")
 
-    raw = provider_fn(transcript)
-    parsed = _parse_llm_json(raw)
+    raw = call_llm(EXTRACTION_SYSTEM_PROMPT, transcript)
+    parsed = parse_llm_json(raw)
 
     result: Dict[str, Any] = {}
     for section in SECTIONS:

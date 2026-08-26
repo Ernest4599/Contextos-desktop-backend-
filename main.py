@@ -92,3 +92,22 @@ async def debug_impersonate_test(payload: ShareLinkRequest):
             results[target] = {"error": str(e)}
 
     return results
+
+
+class QuickPromptRequest(BaseModel):
+    overview: str = ""
+    decisions: str = ""
+    task: str = ""
+
+
+@app.post("/quick-prompt")
+async def quick_prompt(payload: QuickPromptRequest):
+    from services.quick_prompt import generate_quick_prompt, QuickPromptValidationError, QuickPromptError
+
+    try:
+        result = generate_quick_prompt(payload.overview, payload.decisions, payload.task)
+        return {"success": True, **result}
+    except QuickPromptValidationError as e:
+        return {"success": False, "error": e.message}
+    except QuickPromptError as e:
+        return {"success": False, "error": str(e)}
