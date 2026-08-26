@@ -1,3 +1,4 @@
+import inspect
 import requests
 
 from services.link_detector import detect_platform
@@ -7,6 +8,7 @@ from services.claude_parser import parse_claude_share
 from services.gemini_parser import parse_gemini_share
 from services.perplexity_parser import parse_perplexity_share
 from services.metaai_parser import parse_metaai_share
+from services.deepseek_parser import parse_deepseek_share
 
 
 class ShareLinkError(Exception):
@@ -29,6 +31,7 @@ PLATFORM_PARSERS = {
     "gemini": parse_gemini_share,
     "perplexity": parse_perplexity_share,
     "metaai": parse_metaai_share,
+    "deepseek": parse_deepseek_share,
 }
 
 
@@ -49,7 +52,11 @@ async def import_from_share_link(url: str) -> list[dict]:
     parser = PLATFORM_PARSERS.get(platform)
     if parser:
         try:
-            messages = parser(url)
+            result = parser(url)
+            if inspect.isawaitable(result):
+                messages = await result
+            else:
+                messages = result
             print(f"[IMPORT] {platform} parser succeeded, {len(messages)} messages")
         except Exception as e:
             print(f"[IMPORT] {platform} parser failed: {e}")
