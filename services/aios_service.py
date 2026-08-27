@@ -10,8 +10,8 @@ system - the LLM does this classification directly, same pattern as
 context_extractor.py and quick_prompt.py.
 
 Every UI surface (Overview summary, Identity Strength, Recent Memories,
-category pages) reads from this same engine - no separate backend logic
-per view.
+category pages, AIOS Quick Prompt) reads from this same engine - no
+separate backend logic per view.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ ALLOWED_CATEGORIES = [
 ]
 
 MAX_EXISTING_MEMORIES_IN_PROMPT = 60
+MAX_QUICK_PROMPT_LENGTH = 2000
 
 # Categories checked for the Identity Strength completeness score.
 IDENTITY_STRENGTH_CATEGORIES = [
@@ -55,12 +56,31 @@ Respond with ONLY a JSON object of this exact shape:
 
 If nothing useful is present, return {"items": []}. No preamble, no markdown fences."""
 
+AIOS_QUICK_PROMPT_SYSTEM_PROMPT = """You are AIOS's Quick Prompt engine. You build a single, complete, ready-to-use prompt personalized to this specific user, for them to paste into any AI (ChatGPT, Claude, Gemini, or any other). You do NOT execute the request yourself - you only construct the prompt.
+
+You are given:
+1. USER REQUEST - what they want help creating
+2. USER IDENTITY - memories AIOS has learned about this user (personality, preferences, goals, writing style, knowledge, etc). This may say AIOS doesn't know much yet.
+
+Process:
+1. Understand what the user is asking for.
+2. From USER IDENTITY, use only what is genuinely relevant to this specific request - ignore anything that doesn't help here. Never invent identity details that are not present.
+3. Choose the most appropriate expert role for the request.
+4. Build one complete prompt that: states the role, naturally incorporates relevant personalization (tone, preferences, constraints, context) only where it improves the result, states the objective clearly, specifies the expected output format, and is ready to paste directly into another AI with no further editing needed.
+5. If USER IDENTITY has nothing relevant, build a strong prompt without fabricating personalization.
+
+Respond with ONLY a JSON object with this exact key:
+{"prompt": "..."}
+
+No preamble, no markdown fences, no extra commentary."""
+
 
 def _format_existing_memories(memories: List[AiosMemory]) -> str:
     if not memories:
         return "(none yet)"
-    lines = [f"id={m.id} category={m.category} content=\"{m.content}\"" for m in memories]
-    return "\n".join(lines)
+    lines = [f"id={m.id} category={m.category} content="{m.content}"" for m in memories]
+    return "
+".join(lines)
 
 
 def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
@@ -79,8 +99,12 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
     )
 
     user_content = (
-        f"NEW INPUT:\n{raw_input}\n\n"
-        f"EXISTING MEMORIES:\n{_format_existing_memories(existing)}"
+        f"NEW INPUT:
+{raw_input}
+
+"
+        f"EXISTING MEMORIES:
+{_format_existing_memories(existing)}"
     )
 
     raw = call_llm(CLASSIFY_SYSTEM_PROMPT, user_content)
@@ -246,7 +270,7 @@ def delete_memory(db: Session, user_id: int, memory_id: int) -> None:
 
 def get_relevant_memories(db: Session, user_id: int, request_text: str, max_items: int = 10) -> List[str]:
     """
-    Used by Quick Prompt's AIOS mode: ranks the user's active memories by
+    Used by AIOS Quick Prompt: ranks the user's active memories by
     relevance to the current request via one LLM call, returning only the
     strongest matches rather than dumping the whole identity into the prompt.
     """
@@ -260,14 +284,19 @@ def get_relevant_memories(db: Session, user_id: int, request_text: str, max_item
     if not active:
         return []
 
-    memory_lines = "\n".join(f"id={m.id}: {m.content}" for m in active)
+    memory_lines = "
+".join(f"id={m.id}: {m.content}" for m in active)
     system_prompt = (
         "You are ranking a user's stored identity memories by relevance to their "
-        "current request. Return ONLY a JSON object: {\"relevant_ids\": [id, id, ...]} "
+        "current request. Return ONLY a JSON object: {"relevant_ids": [id, id, ...]} "
         f"with at most {max_items} ids, ordered most-relevant first. Ignore memories "
         "that don't meaningfully help with this specific request."
     )
-    user_content = f"REQUEST:\n{request_text}\n\nMEMORIES:\n{memory_lines}"
+    user_content = f"REQUEST:
+{request_text}
+
+MEMORIES:
+{memory_lines}"
 
     try:
         raw = call_llm(system_prompt, user_content)
@@ -278,3 +307,40 @@ def get_relevant_memories(db: Session, user_id: int, request_text: str, max_item
 
     by_id = {m.id: m.content for m in active}
     return [by_id[i] for i in relevant_ids if i in by_id][:max_items]
+
+
+def generate_aios_quick_prompt(db: Session, user_id: int, request_text: str) -> Dict[str, Any]:
+    """
+    AIOS Quick Prompt pipeline: understand request -> retrieve relevant
+    identity -> build context -> generate prompt -> validate -> return.
+    AIOS never executes the generated prompt itself; the user copies it
+    into whichever AI they choose.
+    """
+    request_text = (request_text or "").strip()
+    if not request_text:
+        raise AiosError("Tell AIOS what you need first")
+    if len(request_text) > MAX_QUICK_PROMPT_LENGTH:
+        raise AiosError("That's too long — please trim it")
+
+    relevant_memories = get_relevant_memories(db, user_id, request_text)
+    identity_block = (
+        "
+".join(f"- {m}" for m in relevant_memories)
+        if relevant_memories
+        else "(AIOS doesn't know much about this user yet)"
+    )
+
+    user_content = f"USER REQUEST:
+{request_text}
+
+USER IDENTITY:
+{identity_block}"
+
+    raw = call_llm(AIOS_QUICK_PROMPT_SYSTEM_PROMPT, user_content)
+    parsed = parse_llm_json(raw)
+
+    prompt = parsed.get("prompt", "")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise AiosError("AIOS couldn't generate a prompt — please try again")
+
+    return {"prompt": prompt.strip()}

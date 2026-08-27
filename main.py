@@ -321,3 +321,27 @@ def aios_delete_memory(memory_id: int, authorization: str = AiosHeader(default="
     finally:
         if db is not None:
             db.close()
+
+
+class AiosQuickPromptRequest(BaseModel):
+    message: str
+
+
+@app.post("/aios/quick-prompt")
+def aios_quick_prompt(payload: AiosQuickPromptRequest, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = aios_service.generate_aios_quick_prompt(db, user_id, payload.message)
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except aios_service.AiosError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS] Unexpected error in /aios/quick-prompt: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()

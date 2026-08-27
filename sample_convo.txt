@@ -1,0 +1,9 @@
+User: I'm trying to build a mobile app that syncs notes across devices.
+Right now the backend is only half-built - auth works but sync doesn't.
+We decided to use Supabase instead of Firebase for the database.
+Assistant: Got it. I already set up the auth flow and wrote the login screen.
+Still need to build the sync engine and add offline support.
+User: I only have until Friday before my demo, so this has to move fast.
+Not sure yet whether to use WebSockets or polling for sync.
+The Supabase project ID is stored in .env as SUPABASE_URL.
+Next, I need to start on the sync engine right now, that's the priority.
