@@ -38,6 +38,10 @@ def _validate_email(email: str) -> str:
 def _validate_password(password: str) -> None:
     if not password or len(password) < 8:
         raise AuthError("Password must be at least 8 characters")
+    if not re.search(r"[0-9]", password):
+        raise AuthError("Password must include at least one number")
+    if not re.search(r"[A-Za-z]", password):
+        raise AuthError("Password must include at least one letter")
 
 
 def _hash_password(password: str) -> str:
