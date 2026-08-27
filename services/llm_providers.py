@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import requests
 
-GENERIC_ERROR_MESSAGE = "AI service is temporarily unavailable. Please try again shortly."
+GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again."
 
 
 class LLMProviderError(Exception):
