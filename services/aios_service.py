@@ -78,9 +78,8 @@ No preamble, no markdown fences, no extra commentary."""
 def _format_existing_memories(memories: List[AiosMemory]) -> str:
     if not memories:
         return "(none yet)"
-    lines = [f"id={m.id} category={m.category} content="{m.content}"" for m in memories]
-    return "
-".join(lines)
+    lines = [f'id={m.id} category={m.category} content="{m.content}"' for m in memories]
+    return "\n".join(lines)
 
 
 def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
@@ -99,12 +98,8 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
     )
 
     user_content = (
-        f"NEW INPUT:
-{raw_input}
-
-"
-        f"EXISTING MEMORIES:
-{_format_existing_memories(existing)}"
+        f"NEW INPUT:\n{raw_input}\n\n"
+        f"EXISTING MEMORIES:\n{_format_existing_memories(existing)}"
     )
 
     raw = call_llm(CLASSIFY_SYSTEM_PROMPT, user_content)
@@ -284,19 +279,14 @@ def get_relevant_memories(db: Session, user_id: int, request_text: str, max_item
     if not active:
         return []
 
-    memory_lines = "
-".join(f"id={m.id}: {m.content}" for m in active)
+    memory_lines = "\n".join(f"id={m.id}: {m.content}" for m in active)
     system_prompt = (
         "You are ranking a user's stored identity memories by relevance to their "
-        "current request. Return ONLY a JSON object: {"relevant_ids": [id, id, ...]} "
+        'current request. Return ONLY a JSON object: {"relevant_ids": [id, id, ...]} '
         f"with at most {max_items} ids, ordered most-relevant first. Ignore memories "
         "that don't meaningfully help with this specific request."
     )
-    user_content = f"REQUEST:
-{request_text}
-
-MEMORIES:
-{memory_lines}"
+    user_content = f"REQUEST:\n{request_text}\n\nMEMORIES:\n{memory_lines}"
 
     try:
         raw = call_llm(system_prompt, user_content)
@@ -324,17 +314,12 @@ def generate_aios_quick_prompt(db: Session, user_id: int, request_text: str) -> 
 
     relevant_memories = get_relevant_memories(db, user_id, request_text)
     identity_block = (
-        "
-".join(f"- {m}" for m in relevant_memories)
+        "\n".join(f"- {m}" for m in relevant_memories)
         if relevant_memories
         else "(AIOS doesn't know much about this user yet)"
     )
 
-    user_content = f"USER REQUEST:
-{request_text}
-
-USER IDENTITY:
-{identity_block}"
+    user_content = f"USER REQUEST:\n{request_text}\n\nUSER IDENTITY:\n{identity_block}"
 
     raw = call_llm(AIOS_QUICK_PROMPT_SYSTEM_PROMPT, user_content)
     parsed = parse_llm_json(raw)
