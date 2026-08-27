@@ -134,3 +134,73 @@ async def process_share_link(payload: ShareLinkRequest):
         return {"success": False, "error": e.message}
 
     return StreamingResponse(run_processing_pipeline(messages), media_type="text/event-stream")
+
+
+from services.db import get_db_session, init_db
+from services.auth_service import signup, login, decode_session_token, AuthError
+from fastapi import Header
+
+
+@app.on_event("startup")
+def on_startup():
+    try:
+        init_db()
+    except Exception as e:
+        print(f"[DB] Failed to initialize database: {e}")
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    confirm_password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/auth/signup")
+def auth_signup(payload: SignupRequest):
+    db = None
+    try:
+        db = get_db_session()
+        token, email = signup(db, payload.email, payload.password, payload.confirm_password)
+        return {"success": True, "token": token, "email": email}
+    except (AuthError, RuntimeError) as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AUTH] Unexpected signup error: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/auth/login")
+def auth_login(payload: LoginRequest):
+    db = None
+    try:
+        db = get_db_session()
+        token, email = login(db, payload.email, payload.password)
+        return {"success": True, "token": token, "email": email}
+    except (AuthError, RuntimeError) as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AUTH] Unexpected login error: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.get("/auth/me")
+def auth_me(authorization: str = Header(default="")):
+    if not authorization.startswith("Bearer "):
+        return {"success": False, "error": "Not signed in"}
+    token = authorization[len("Bearer "):]
+    try:
+        payload = decode_session_token(token)
+        return {"success": True, "email": payload.get("email")}
+    except AuthError as e:
+        return {"success": False, "error": e.message}
