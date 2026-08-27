@@ -111,3 +111,13 @@ async def quick_prompt(payload: QuickPromptRequest):
         return {"success": False, "error": e.message}
     except QuickPromptError as e:
         return {"success": False, "error": str(e)}
+
+
+@app.post("/process/share-link")
+async def process_share_link(payload: ShareLinkRequest):
+    try:
+        messages = await import_from_share_link(payload.url)
+    except ShareLinkError as e:
+        return {"success": False, "error": e.message}
+
+    return StreamingResponse(run_processing_pipeline(messages), media_type="text/event-stream")
