@@ -102,3 +102,12 @@ def login(db: Session, email: str, password: str) -> tuple[str, str]:
         raise AuthError("Incorrect email or password")
 
     return _create_session_token(user.id, user.email), user.email
+
+
+def get_user_id_from_token(authorization: str) -> int:
+    """Extracts and validates the user id from an 'Authorization: Bearer <token>' header."""
+    if not authorization.startswith("Bearer "):
+        raise AuthError("Not signed in")
+    token = authorization[len("Bearer "):]
+    payload = decode_session_token(token)
+    return int(payload["sub"])

@@ -204,3 +204,120 @@ def auth_me(authorization: str = Header(default="")):
         return {"success": True, "email": payload.get("email")}
     except AuthError as e:
         return {"success": False, "error": e.message}
+
+
+from services.db import get_db_session
+from services.auth_service import get_user_id_from_token, AuthError as AiosAuthError
+from services import aios_service
+from fastapi import Header as AiosHeader
+
+
+def _require_user(authorization: str) -> int:
+    try:
+        return get_user_id_from_token(authorization)
+    except AiosAuthError as e:
+        raise ValueError(e.message)
+
+
+class TellAiosRequest(BaseModel):
+    content: str
+
+
+class UpdateMemoryRequest(BaseModel):
+    content: str
+
+
+@app.post("/aios/tell")
+def aios_tell(payload: TellAiosRequest, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = aios_service.tell_aios(db, user_id, payload.content)
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except aios_service.AiosError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS] Unexpected error in /aios/tell: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.get("/aios/overview")
+def aios_overview(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = aios_service.get_overview(db, user_id)
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS] Unexpected error in /aios/overview: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.get("/aios/memories")
+def aios_memories(category: str | None = None, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        results = aios_service.get_memories(db, user_id, category)
+        return {"success": True, "memories": results}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS] Unexpected error in /aios/memories: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.patch("/aios/memories/{memory_id}")
+def aios_update_memory(memory_id: int, payload: UpdateMemoryRequest, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = aios_service.update_memory(db, user_id, memory_id, payload.content)
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except aios_service.AiosError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS] Unexpected error in PATCH /aios/memories: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.delete("/aios/memories/{memory_id}")
+def aios_delete_memory(memory_id: int, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        aios_service.delete_memory(db, user_id, memory_id)
+        return {"success": True}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except aios_service.AiosError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS] Unexpected error in DELETE /aios/memories: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
