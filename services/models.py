@@ -23,5 +23,6 @@ class AiosMemory(Base):
     source = Column(String, default="user_input")
     confidence = Column(String, default="high")
     status = Column(String, default="active")  # active | outdated
+    batch_id = Column(String, index=True, nullable=True)  # groups memories created/touched by one /aios/tell call
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

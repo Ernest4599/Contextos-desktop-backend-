@@ -8,13 +8,18 @@ new, a duplicate (touch existing), or a conflicting update (mark old
 outdated, store new as current). No separate embedding/similarity
 system - the LLM does this classification directly, same pattern as
 context_extractor.py and quick_prompt.py.
+
+Every UI surface (Overview summary, Identity Strength, Recent Memories,
+category pages) reads from this same engine - no separate backend logic
+per view.
 """
 from __future__ import annotations
 
+import uuid
 from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 
 from services.llm_providers import LLMProviderError, call_llm, parse_llm_json
 from services.models import AiosMemory
@@ -27,6 +32,12 @@ ALLOWED_CATEGORIES = [
 ]
 
 MAX_EXISTING_MEMORIES_IN_PROMPT = 60
+
+# Categories checked for the Identity Strength completeness score.
+IDENTITY_STRENGTH_CATEGORIES = [
+    "personality", "writing_style", "preference", "goal", "knowledge", "important_fact",
+]
+MIN_MEMORIES_FOR_STRENGTH_CHECK = 10
 
 CLASSIFY_SYSTEM_PROMPT = """You are AIOS, an identity layer that learns what matters about a user from what they tell you, to later personalize AI prompts on their behalf.
 
@@ -56,6 +67,8 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
     raw_input = (raw_input or "").strip()
     if not raw_input:
         raise AiosError("Tell AIOS something first")
+
+    batch_id = str(uuid.uuid4())
 
     existing = (
         db.query(AiosMemory)
@@ -94,6 +107,7 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
             match = existing_by_id.get(existing_id)
             if match:
                 match.updated_at = None  # let onupdate trigger a fresh timestamp
+                match.batch_id = batch_id
                 db.add(match)
             skipped_duplicates += 1
             continue
@@ -107,6 +121,7 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
             new_memory = AiosMemory(
                 user_id=user_id, content=content, category=category,
                 source="user_input", confidence="high", status="active",
+                batch_id=batch_id,
             )
             db.add(new_memory)
             updated.append({"content": content, "category": category})
@@ -116,6 +131,7 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
         new_memory = AiosMemory(
             user_id=user_id, content=content, category=category,
             source="user_input", confidence="high", status="active",
+            batch_id=batch_id,
         )
         db.add(new_memory)
         added.append({"content": content, "category": category})
@@ -148,9 +164,34 @@ def get_overview(db: Session, user_id: int) -> Dict[str, Any]:
         .all()
     )
 
+    last_updated = max((m.updated_at for m in active if m.updated_at), default=None)
+
+    conversations_used = (
+        db.query(func.count(func.distinct(AiosMemory.batch_id)))
+        .filter(AiosMemory.user_id == user_id, AiosMemory.batch_id.isnot(None))
+        .scalar()
+        or 0
+    )
+
+    checks_passed = sum(1 for cat in IDENTITY_STRENGTH_CATEGORIES if categories.get(cat, 0) > 0)
+    if len(active) >= MIN_MEMORIES_FOR_STRENGTH_CHECK:
+        checks_passed += 1
+    total_checks = len(IDENTITY_STRENGTH_CATEGORIES) + 1
+    strength_score = round((checks_passed / total_checks) * 100)
+
+    if strength_score >= 75:
+        strength_label = "Strong"
+    elif strength_score >= 40:
+        strength_label = "Growing"
+    else:
+        strength_label = "Weak"
+
     return {
         "total_memories": len(active),
         "categories": categories,
+        "last_updated": last_updated.isoformat() if last_updated else None,
+        "conversations_used": conversations_used,
+        "identity_strength": {"score": strength_score, "label": strength_label},
         "recent_memories": [
             {"id": m.id, "content": m.content, "category": m.category, "updated_at": m.updated_at.isoformat() if m.updated_at else None}
             for m in recent

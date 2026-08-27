@@ -31,3 +31,13 @@ def init_db() -> None:
     if engine is not None:
         from services import models  # noqa: F401 - ensures models are registered before create_all
         Base.metadata.create_all(bind=engine)
+        _run_migrations()
+
+
+def _run_migrations() -> None:
+    """create_all() only creates missing tables, not missing columns on
+    tables that already exist in production. This adds any columns
+    introduced after a table was already live."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE aios_memories ADD COLUMN IF NOT EXISTS batch_id VARCHAR"))
