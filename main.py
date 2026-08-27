@@ -121,6 +121,9 @@ async def quick_prompt(payload: QuickPromptRequest):
         return {"success": False, "error": e.message}
     except QuickPromptError as e:
         return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[QUICK_PROMPT] Unexpected error: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
 
 
 @app.post("/process/share-link")

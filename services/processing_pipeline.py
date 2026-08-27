@@ -42,6 +42,10 @@ async def run_processing_pipeline(messages: List[Dict[str, str]]):
     except ExtractionError as e:
         yield _sse("error", {"message": str(e)})
         return
+    except Exception as e:
+        print(f"[PIPELINE] Unexpected error during extraction: {e}")
+        yield _sse("error", {"message": "Something went wrong while processing your conversation. Please try again."})
+        return
 
     yield _sse("step", {
         "step": "detecting_topics",
