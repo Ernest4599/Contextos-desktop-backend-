@@ -345,3 +345,88 @@ def aios_quick_prompt(payload: AiosQuickPromptRequest, authorization: str = Aios
     finally:
         if db is not None:
             db.close()
+
+
+from services import project_service
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+
+
+@app.get("/projects")
+def get_projects(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        results = project_service.list_projects(db, user_id)
+        return {"success": True, "projects": results}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[PROJECTS] Unexpected error in GET /projects: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/projects")
+def post_project(payload: CreateProjectRequest, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = project_service.create_project(db, user_id, payload.name)
+        return {"success": True, "project": result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except project_service.ProjectError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[PROJECTS] Unexpected error in POST /projects: {e}")
+        return {"success": False, "error": "Couldn't create project"}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.get("/projects/{project_id}")
+def get_single_project(project_id: int, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = project_service.get_project(db, user_id, project_id)
+        return {"success": True, "project": result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except project_service.ProjectError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[PROJECTS] Unexpected error in GET /projects/id: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.delete("/projects/{project_id}")
+def delete_single_project(project_id: int, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        project_service.delete_project(db, user_id, project_id)
+        return {"success": True}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except project_service.ProjectError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[PROJECTS] Unexpected error in DELETE /projects/id: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
