@@ -430,3 +430,58 @@ def delete_single_project(project_id: int, authorization: str = AiosHeader(defau
     finally:
         if db is not None:
             db.close()
+
+
+from services import license_service
+
+
+class PurchaseLicenseRequest(BaseModel):
+    plan: str
+
+
+@app.post("/license/purchase")
+def purchase_license(payload: PurchaseLicenseRequest, authorization: str = AiosHeader(default="")):
+    """
+    Stubbed purchase endpoint: skips real payment for now and immediately
+    creates an active license linked to the authenticated account, or
+    with no account if not signed in (standalone path completed later
+    once recovery codes exist).
+    """
+    db = None
+    try:
+        try:
+            user_id = _require_user(authorization)
+        except ValueError:
+            user_id = None
+
+        db = get_db_session()
+        result = license_service.create_license_after_payment(db, user_id, payload.plan)
+        return {"success": True, "license": result}
+    except license_service.LicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[LICENSE] Unexpected error in /license/purchase: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.get("/license/mine")
+def get_my_license(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = license_service.get_license_for_user(db, user_id)
+        return {"success": True, "license": result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except license_service.LicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[LICENSE] Unexpected error in /license/mine: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
