@@ -651,3 +651,28 @@ def clear_all_data_route(authorization: str = AiosHeader(default="")):
     finally:
         if db is not None:
             db.close()
+
+
+class VerifyLicenseRequest(BaseModel):
+    license_key: str
+
+
+@app.post("/license/verify")
+def verify_license_route(payload: VerifyLicenseRequest):
+    """
+    No-account path: look up a license by its key directly, no auth
+    required - per the standalone license architecture.
+    """
+    db = None
+    try:
+        db = get_db_session()
+        result = license_service.get_license_by_key(db, payload.license_key.strip())
+        return {"success": True, "license": result}
+    except license_service.LicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[LICENSE] Unexpected error in /license/verify: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
