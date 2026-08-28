@@ -567,3 +567,87 @@ def rotate_code_route(license_id: int, authorization: str = AiosHeader(default="
     finally:
         if db is not None:
             db.close()
+
+
+from services import aios_preferences_service, data_service
+
+
+class AiosPreferencesRequest(BaseModel):
+    personalization_level: str
+    enabled_categories: list[str]
+
+
+@app.get("/aios/preferences")
+def get_aios_preferences(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = aios_preferences_service.get_preferences(db, user_id)
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS_PREFS] Unexpected error in GET /aios/preferences: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/aios/preferences")
+def post_aios_preferences(payload: AiosPreferencesRequest, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        result = aios_preferences_service.update_preferences(
+            db, user_id, payload.personalization_level, payload.enabled_categories
+        )
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except aios_preferences_service.AiosPreferencesError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[AIOS_PREFS] Unexpected error in POST /aios/preferences: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/aios/reset-identity")
+def reset_aios_identity_route(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        aios_preferences_service.reset_aios_identity(db, user_id)
+        return {"success": True}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS_PREFS] Unexpected error in /aios/reset-identity: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/data/clear-all")
+def clear_all_data_route(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        data_service.clear_all_data(db, user_id)
+        return {"success": True}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[DATA] Unexpected error in /data/clear-all: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()

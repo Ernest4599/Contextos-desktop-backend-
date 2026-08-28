@@ -70,3 +70,12 @@ class LicenseRecoveryEvent(Base):
     success = Column(String, nullable=False)  # "true" | "false"
     ip_hash = Column(String, nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AiosPreferences(Base):
+    __tablename__ = "aios_preferences"
+
+    user_id = Column(Integer, primary_key=True)
+    personalization_level = Column(String, default="balanced")  # minimal | balanced | maximum
+    enabled_categories = Column(String, default="personality,preference,goal,interest,knowledge,writing_style,important_fact,context")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
