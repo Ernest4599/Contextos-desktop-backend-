@@ -48,3 +48,25 @@ class License(Base):
     status = Column(String, default="pending")  # pending | active | expired | revoked
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class LicenseRecoveryCode(Base):
+    __tablename__ = "license_recovery_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    license_id = Column(Integer, index=True, nullable=False)
+    code_hash = Column(String, nullable=False)
+    status = Column(String, default="unused")  # unused | used
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    used_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class LicenseRecoveryEvent(Base):
+    __tablename__ = "license_recovery_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    license_id = Column(Integer, index=True, nullable=True)  # null if no matching license found
+    event_type = Column(String, nullable=False)  # RECOVERY_ATTEMPT | RECOVERY_SUCCESS | RECOVERY_FAILURE | RECOVERY_LOCKED | CODE_USED | CODE_ROTATED
+    success = Column(String, nullable=False)  # "true" | "false"
+    ip_hash = Column(String, nullable=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())

@@ -485,3 +485,85 @@ def get_my_license(authorization: str = AiosHeader(default="")):
     finally:
         if db is not None:
             db.close()
+
+
+from fastapi import Request
+from services import recovery_service
+
+
+@app.post("/license/purchase-with-codes")
+def purchase_license_with_codes(payload: PurchaseLicenseRequest, authorization: str = AiosHeader(default="")):
+    """
+    Same as /license/purchase, but also generates and returns the 4 raw
+    recovery codes - this is the ONLY response that will ever contain
+    them. The frontend must show them immediately and never expect to
+    fetch them again.
+    """
+    db = None
+    try:
+        try:
+            user_id = _require_user(authorization)
+        except ValueError:
+            user_id = None
+
+        db = get_db_session()
+        license_result = license_service.create_license_after_payment(db, user_id, payload.plan)
+        raw_codes = recovery_service.generate_recovery_codes(db, license_result["license_id"])
+        return {"success": True, "license": license_result, "recovery_codes": raw_codes}
+    except license_service.LicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[LICENSE] Unexpected error in /license/purchase-with-codes: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+class RecoverLicenseRequest(BaseModel):
+    code: str
+
+
+@app.post("/license/recover")
+def recover_license_route(payload: RecoverLicenseRequest, request: Request):
+    db = None
+    try:
+        db = get_db_session()
+        client_ip = request.client.host if request.client else None
+        ip_hash = recovery_service.hash_ip(client_ip)
+        result = recovery_service.recover_license(db, payload.code, ip_hash)
+        return {"success": True, **result}
+    except recovery_service.RecoveryError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[RECOVERY] Unexpected error in /license/recover: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/license/{license_id}/rotate-code")
+def rotate_code_route(license_id: int, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+
+        owned = license_service.get_license_for_user(db, user_id)
+        if owned["license_id"] != license_id:
+            return {"success": False, "error": "License not found"}
+
+        new_code = recovery_service.rotate_recovery_code(db, license_id)
+        remaining = recovery_service.get_remaining_count(db, license_id)
+        return {"success": True, "new_code": new_code, "recovery_codes_remaining": remaining}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except license_service.LicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[RECOVERY] Unexpected error in rotate-code: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
