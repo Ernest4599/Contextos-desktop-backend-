@@ -79,3 +79,12 @@ class AiosPreferences(Base):
     personalization_level = Column(String, default="balanced")  # minimal | balanced | maximum
     enabled_categories = Column(String, default="personality,preference,goal,interest,knowledge,writing_style,important_fact,context")
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TermsAcceptance(Base):
+    __tablename__ = "terms_acceptances"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True, nullable=True)
+    anon_id = Column(String, index=True, nullable=True)
+    accepted_at = Column(DateTime(timezone=True), server_default=func.now())

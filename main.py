@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Cookie, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from curl_cffi import requests as crequests
@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -138,6 +138,7 @@ async def process_share_link(payload: ShareLinkRequest):
 
 from services.db import get_db_session, init_db
 from services.auth_service import signup, login, decode_session_token, AuthError
+from services import terms_service
 from fastapi import Header
 
 
@@ -161,11 +162,13 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/auth/signup")
-def auth_signup(payload: SignupRequest):
+def auth_signup(payload: SignupRequest, contextos_anon_id: str | None = Cookie(default=None)):
     db = None
     try:
         db = get_db_session()
         token, email = signup(db, payload.email, payload.password, payload.confirm_password)
+        payload_data = decode_session_token(token)
+        terms_service.link_anon_to_user(db, contextos_anon_id, int(payload_data["sub"]))
         return {"success": True, "token": token, "email": email}
     except (AuthError, RuntimeError) as e:
         return {"success": False, "error": str(e)}
@@ -178,11 +181,13 @@ def auth_signup(payload: SignupRequest):
 
 
 @app.post("/auth/login")
-def auth_login(payload: LoginRequest):
+def auth_login(payload: LoginRequest, contextos_anon_id: str | None = Cookie(default=None)):
     db = None
     try:
         db = get_db_session()
         token, email = login(db, payload.email, payload.password)
+        payload_data = decode_session_token(token)
+        terms_service.link_anon_to_user(db, contextos_anon_id, int(payload_data["sub"]))
         return {"success": True, "token": token, "email": email}
     except (AuthError, RuntimeError) as e:
         return {"success": False, "error": str(e)}
@@ -672,6 +677,69 @@ def verify_license_route(payload: VerifyLicenseRequest):
         return {"success": False, "error": e.message}
     except Exception as e:
         print(f"[LICENSE] Unexpected error in /license/verify: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+ANON_COOKIE_NAME = "contextos_anon_id"
+
+
+def _get_optional_user_id(authorization: str) -> int | None:
+    try:
+        return get_user_id_from_token(authorization)
+    except AiosAuthError:
+        return None
+
+
+@app.get("/terms/status")
+def terms_status(
+    authorization: str = AiosHeader(default=""),
+    contextos_anon_id: str | None = Cookie(default=None),
+):
+    db = None
+    try:
+        db = get_db_session()
+        user_id = _get_optional_user_id(authorization)
+        accepted = terms_service.has_accepted(db, user_id, contextos_anon_id)
+        return {"success": True, "accepted": accepted}
+    except Exception as e:
+        print(f"[TERMS] Unexpected error in /terms/status: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/terms/accept")
+def terms_accept(
+    response: Response,
+    authorization: str = AiosHeader(default=""),
+    contextos_anon_id: str | None = Cookie(default=None),
+):
+    db = None
+    try:
+        db = get_db_session()
+        user_id = _get_optional_user_id(authorization)
+
+        anon_id = contextos_anon_id
+        if user_id is None and not anon_id:
+            import secrets
+            anon_id = secrets.token_urlsafe(24)
+            response.set_cookie(
+                key=ANON_COOKIE_NAME,
+                value=anon_id,
+                httponly=True,
+                secure=True,
+                samesite="none",
+                max_age=60 * 60 * 24 * 365,
+            )
+
+        terms_service.accept(db, user_id, anon_id)
+        return {"success": True}
+    except Exception as e:
+        print(f"[TERMS] Unexpected error in /terms/accept: {e}")
         return {"success": False, "error": "Something went wrong. Please try again."}
     finally:
         if db is not None:
