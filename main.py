@@ -12,6 +12,7 @@ from services.processing_pipeline import run_processing_pipeline
 app = FastAPI(title="ContextOS Backend")
 
 from fastapi.middleware.cors import CORSMiddleware
+from services.security_headers import SecurityHeadersMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,6 +21,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.get("/")
