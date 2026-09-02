@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Cookie, Response
+from fastapi import FastAPI, UploadFile, File, Cookie, Response, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from curl_cffi import requests as crequests
@@ -8,6 +8,7 @@ from services.paste_validator import validate_pasted_text, PasteValidationError
 from services.message_splitter import split_messages
 from services.file_extractor import extract_file_content, FileExtractionError
 from services.processing_pipeline import run_processing_pipeline
+from services.access_control import require_access, AccessContext
 
 app = FastAPI(title="ContextOS Backend")
 
@@ -43,7 +44,7 @@ class ShareLinkRequest(BaseModel):
 
 
 @app.post("/import/share-link")
-async def import_share_link(payload: ShareLinkRequest):
+async def import_share_link(payload: ShareLinkRequest, access: AccessContext = Depends(require_access)):
     try:
         messages = await import_from_share_link(payload.url)
         return {
@@ -63,7 +64,7 @@ class PasteConversationRequest(BaseModel):
 
 
 @app.post("/process/paste")
-async def process_paste(payload: PasteConversationRequest):
+async def process_paste(payload: PasteConversationRequest, access: AccessContext = Depends(require_access)):
     try:
         validated = validate_pasted_text(payload.text)
     except PasteValidationError as e:
@@ -74,7 +75,7 @@ async def process_paste(payload: PasteConversationRequest):
 
 
 @app.post("/process/upload")
-async def process_upload(file: UploadFile = File(...)):
+async def process_upload(file: UploadFile = File(...), access: AccessContext = Depends(require_access)):
     raw_bytes = await file.read()
     try:
         messages = extract_file_content(file.filename, raw_bytes)
@@ -122,7 +123,7 @@ class QuickPromptRequest(BaseModel):
 
 
 @app.post("/quick-prompt")
-async def quick_prompt(payload: QuickPromptRequest):
+async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depends(require_access)):
     from services.quick_prompt import generate_quick_prompt, QuickPromptValidationError, QuickPromptError
 
     try:
