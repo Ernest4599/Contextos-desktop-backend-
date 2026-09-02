@@ -4,6 +4,12 @@ LLM_PROVIDER env var ("anthropic" | "openai" | "gemini"), each reading
 its own API key from its usual env var. Used by both context_extractor
 (share-link/paste/upload) and quick_prompt.
 
+If the preferred provider fails (including transient errors like a
+503 "model overloaded"), call_llm automatically falls through to any
+other provider that has an API key configured, so a single provider's
+outage doesn't take down the whole feature. The generic error is only
+raised if every configured provider fails.
+
 All failures are logged in detail server-side (print, visible in Render
 logs) but surfaced to callers/users as one generic message - internal
 config details (which env var is missing, which provider failed, raw
@@ -118,14 +124,45 @@ _PROVIDERS = {
     "gemini": _call_gemini,
 }
 
+_PROVIDER_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+_PROVIDER_ORDER = ["anthropic", "openai", "gemini"]
+
 
 def call_llm(system_prompt: str, user_content: str) -> str:
-    provider_name = os.environ.get("LLM_PROVIDER", "anthropic").lower()
-    provider_fn = _PROVIDERS.get(provider_name)
-    if provider_fn is None:
-        print(f"[LLM] Unknown LLM_PROVIDER: {provider_name!r}")
-        raise LLMProviderError(GENERIC_ERROR_MESSAGE)
-    return provider_fn(system_prompt, user_content)
+    preferred = os.environ.get("LLM_PROVIDER", "").lower()
+
+    order: list[str] = []
+    if preferred in _PROVIDERS:
+        order.append(preferred)
+    for name in _PROVIDER_ORDER:
+        if name not in order:
+            order.append(name)
+
+    last_error: LLMProviderError | None = None
+    tried_any = False
+
+    for name in order:
+        key_env = _PROVIDER_KEY_ENV[name]
+        if not os.environ.get(key_env):
+            continue  # skip providers with no key configured, no point trying
+
+        tried_any = True
+        try:
+            return _PROVIDERS[name](system_prompt, user_content)
+        except LLMProviderError as e:
+            print(f"[LLM] Provider {name!r} failed, trying next available provider")
+            last_error = e
+            continue
+
+    if not tried_any:
+        print("[LLM] No LLM provider has an API key configured")
+
+    raise last_error or LLMProviderError(GENERIC_ERROR_MESSAGE)
 
 
 def parse_llm_json(raw: str) -> dict:
