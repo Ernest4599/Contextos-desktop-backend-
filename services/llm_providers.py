@@ -95,7 +95,7 @@ def _call_gemini(system_prompt: str, user_content: str) -> str:
     try:
         resp = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.0-flash:generateContent?key={api_key}",
+            f"gemini-flash-latest:generateContent?key={api_key}",
             json={
                 "contents": [{"parts": [{"text": user_content}]}],
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
