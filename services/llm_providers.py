@@ -49,7 +49,9 @@ def _call_anthropic(system_prompt: str, user_content: str) -> str:
             },
             timeout=60,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            print(f"[LLM] Anthropic request failed: {resp.status_code} {resp.text}")
+            raise LLMProviderError(GENERIC_ERROR_MESSAGE)
     except requests.RequestException as e:
         print(f"[LLM] Anthropic request failed: {e}")
         raise LLMProviderError(GENERIC_ERROR_MESSAGE)
