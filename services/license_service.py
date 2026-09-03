@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from services.models import License
 
-VALID_PLANS = ["pro", "team"]
+VALID_PLANS = ["free", "pro", "team"]
 
 
 class LicenseError(Exception):
