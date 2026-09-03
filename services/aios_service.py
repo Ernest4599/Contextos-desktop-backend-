@@ -12,6 +12,10 @@ context_extractor.py and quick_prompt.py.
 Every UI surface (Overview summary, Identity Strength, Recent Memories,
 category pages, AIOS Quick Prompt) reads from this same engine - no
 separate backend logic per view.
+
+Memory content is encrypted at rest (see services/encryption.py) -
+every write encrypts before storing, every read decrypts immediately
+after fetching, including content fed back into LLM prompts.
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ from sqlalchemy import desc, func
 
 from services.llm_providers import LLMProviderError, call_llm, parse_llm_json
 from services.models import AiosMemory
+from services.encryption import encrypt_text, decrypt_text
 
 AiosError = LLMProviderError
 
@@ -78,7 +83,7 @@ No preamble, no markdown fences, no extra commentary."""
 def _format_existing_memories(memories: List[AiosMemory]) -> str:
     if not memories:
         return "(none yet)"
-    lines = [f'id={m.id} category={m.category} content="{m.content}"' for m in memories]
+    lines = [f'id={m.id} category={m.category} content="{decrypt_text(m.content)}"' for m in memories]
     return "\n".join(lines)
 
 
@@ -138,7 +143,7 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
                 match.status = "outdated"
                 db.add(match)
             new_memory = AiosMemory(
-                user_id=user_id, content=content, category=category,
+                user_id=user_id, content=encrypt_text(content), category=category,
                 source="user_input", confidence="high", status="active",
                 batch_id=batch_id,
             )
@@ -148,7 +153,7 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
 
         # action == "new" (or unrecognized -> treat as new)
         new_memory = AiosMemory(
-            user_id=user_id, content=content, category=category,
+            user_id=user_id, content=encrypt_text(content), category=category,
             source="user_input", confidence="high", status="active",
             batch_id=batch_id,
         )
@@ -212,7 +217,7 @@ def get_overview(db: Session, user_id: int) -> Dict[str, Any]:
         "conversations_used": conversations_used,
         "identity_strength": {"score": strength_score, "label": strength_label},
         "recent_memories": [
-            {"id": m.id, "content": m.content, "category": m.category, "updated_at": m.updated_at.isoformat() if m.updated_at else None}
+            {"id": m.id, "content": decrypt_text(m.content), "category": m.category, "updated_at": m.updated_at.isoformat() if m.updated_at else None}
             for m in recent
         ],
     }
@@ -226,7 +231,7 @@ def get_memories(db: Session, user_id: int, category: str | None = None) -> List
     results = query.order_by(desc(AiosMemory.updated_at)).all()
     return [
         {
-            "id": m.id, "content": m.content, "category": m.category,
+            "id": m.id, "content": decrypt_text(m.content), "category": m.category,
             "confidence": m.confidence,
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "updated_at": m.updated_at.isoformat() if m.updated_at else None,
@@ -244,10 +249,11 @@ def update_memory(db: Session, user_id: int, memory_id: int, content: str) -> Di
     if not memory:
         raise AiosError("Memory not found")
 
-    memory.content = content.strip()
+    plain_content = content.strip()
+    memory.content = encrypt_text(plain_content)
     db.add(memory)
     db.commit()
-    return {"id": memory.id, "content": memory.content, "category": memory.category}
+    return {"id": memory.id, "content": plain_content, "category": memory.category}
 
 
 def delete_memory(db: Session, user_id: int, memory_id: int) -> None:
@@ -279,7 +285,7 @@ def get_relevant_memories(db: Session, user_id: int, request_text: str, max_item
     if not active:
         return []
 
-    memory_lines = "\n".join(f"id={m.id}: {m.content}" for m in active)
+    memory_lines = "\n".join(f"id={m.id}: {decrypt_text(m.content)}" for m in active)
     system_prompt = (
         "You are ranking a user's stored identity memories by relevance to their "
         'current request. Return ONLY a JSON object: {"relevant_ids": [id, id, ...]} '
@@ -295,7 +301,7 @@ def get_relevant_memories(db: Session, user_id: int, request_text: str, max_item
     except LLMProviderError:
         return []
 
-    by_id = {m.id: m.content for m in active}
+    by_id = {m.id: decrypt_text(m.content) for m in active}
     return [by_id[i] for i in relevant_ids if i in by_id][:max_items]
 
 
