@@ -122,6 +122,10 @@ app.add_middleware(SlowAPIMiddleware)
 def admin_overview(admin_user_id: int = Depends(require_admin)):
     db = get_db_session()
     try:
+        total_events = db.query(SecurityEvent).count()
+        failed_events = db.query(SecurityEvent).filter(SecurityEvent.success.is_(False)).count()
+        error_rate = round(failed_events / total_events * 100, 2) if total_events > 0 else None
+
         return {
             # Genuinely-real metrics
             "users": db.query(User).count(),
@@ -129,11 +133,52 @@ def admin_overview(admin_user_id: int = Depends(require_admin)):
 
             # Privacy-safe counters -- aggregate totals only, no per-user data
             "context_packages": db.query(ContextPackage).count(),
+            "error_rate": error_rate,  # failed / total security events, all-time
 
-            # Placeholders -- wired up in Phase 3 once the security events table exists
+            # Placeholder -- wired up in Phase 4
             "processing_jobs": None,
-            "error_rate": None,
         }
+    finally:
+        db.close()
+
+
+@app.get("/admin/security-events")
+def admin_security_events(
+    admin_user_id: int = Depends(require_admin),
+    limit: int = 50,
+    offset: int = 0,
+    event_type: str | None = None,
+):
+    limit = max(1, min(limit, 200))
+    db = get_db_session()
+    try:
+        query = db.query(SecurityEvent, User.email).outerjoin(User, SecurityEvent.user_id == User.id)
+        if event_type:
+            query = query.filter(SecurityEvent.event_type == event_type)
+
+        total = query.count()
+        rows = (
+            query.order_by(SecurityEvent.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        events = [
+            {
+                "id": event.id,
+                "event_type": event.event_type,
+                "user_id": event.user_id,
+                "user_email": email,
+                "success": event.success,
+                "ip_hash": event.ip_hash,
+                "detail": event.detail,
+                "created_at": event.created_at.isoformat() if event.created_at else None,
+            }
+            for event, email in rows
+        ]
+
+        return {"events": events, "total": total, "limit": limit, "offset": offset}
     finally:
         db.close()
 
