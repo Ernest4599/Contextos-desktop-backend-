@@ -11,6 +11,7 @@ from services.file_extractor import extract_file_content, FileExtractionError
 from services.processing_pipeline import run_processing_pipeline
 from services.access_control import require_access, AccessContext
 from services.admin_access import require_admin
+from services.models import User, AiosMemory, ContextPackage
 
 import json
 
@@ -84,6 +85,26 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+
+@app.get("/admin/overview")
+def admin_overview(admin_user_id: int = Depends(require_admin)):
+    db = get_db_session()
+    try:
+        return {
+            # Genuinely-real metrics
+            "users": db.query(User).count(),
+            "aios_activity": db.query(AiosMemory).count(),
+
+            # Privacy-safe counters -- aggregate totals only, no per-user data
+            "context_packages": db.query(ContextPackage).count(),
+
+            # Placeholders -- wired up in Phase 3 once the security events table exists
+            "processing_jobs": None,
+            "error_rate": None,
+        }
+    finally:
+        db.close()
 
 
 @app.get("/")
