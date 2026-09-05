@@ -532,6 +532,16 @@ def aios_quick_prompt(payload: AiosQuickPromptRequest, authorization: str = Aios
         user_id = _require_user(authorization)
         db = get_db_session()
         result = aios_service.generate_aios_quick_prompt(db, user_id, payload.message)
+
+        if result.get("prompt"):
+            try:
+                title = (payload.message or "AIOS Quick Prompt").strip() or "AIOS Quick Prompt"
+                package_service.save_package(
+                    db, user_id, source="aios_quick_prompt", title=title, content=result["prompt"]
+                )
+            except Exception as e:
+                print(f"[PACKAGES] Failed to auto-save aios-quick-prompt package: {e}")
+
         return {"success": True, **result}
     except ValueError as e:
         return {"success": False, "error": str(e)}
