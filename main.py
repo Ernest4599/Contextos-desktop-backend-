@@ -399,9 +399,18 @@ def auth_me(authorization: str = Header(default="")):
     token = authorization[len("Bearer "):]
     try:
         payload = decode_session_token(token)
-        return {"success": True, "email": payload.get("email")}
     except AuthError as e:
         return {"success": False, "error": e.message}
+
+    is_admin = False
+    db = get_db_session()
+    try:
+        user = db.query(User).filter(User.id == int(payload["sub"])).first()
+        is_admin = bool(user and user.is_admin)
+    finally:
+        db.close()
+
+    return {"success": True, "email": payload.get("email"), "is_admin": is_admin}
 
 
 from services.db import get_db_session
