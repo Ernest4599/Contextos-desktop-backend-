@@ -11,7 +11,7 @@ from services.file_extractor import extract_file_content, FileExtractionError
 from services.processing_pipeline import run_processing_pipeline
 from services.access_control import require_access, AccessContext
 from services.admin_access import require_admin
-from services.models import User, AiosMemory, ContextPackage, SecurityEvent
+from services.models import User, AiosMemory, ContextPackage, SecurityEvent, License, Project
 
 import json
 
@@ -179,6 +179,128 @@ def admin_security_events(
         ]
 
         return {"events": events, "total": total, "limit": limit, "offset": offset}
+    finally:
+        db.close()
+
+
+@app.get("/admin/users")
+def admin_list_users(
+    admin_user_id: int = Depends(require_admin),
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    limit = max(1, min(limit, 200))
+    db = get_db_session()
+    try:
+        query = db.query(User)
+        if search:
+            query = query.filter(User.email.ilike(f"%{search}%"))
+
+        total = query.count()
+        users = (
+            query.order_by(User.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        return {
+            "users": [
+                {
+                    "id": u.id,
+                    "email": u.email,
+                    "is_admin": u.is_admin,
+                    "created_at": u.created_at.isoformat() if u.created_at else None,
+                    "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+                }
+                for u in users
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/admin/users/{user_id}")
+def admin_get_user(user_id: int, admin_user_id: int = Depends(require_admin)):
+    db = get_db_session()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return {"success": False, "error": "User not found"}
+
+        try:
+            license = license_service.get_license_for_user(db, user_id)
+        except license_service.LicenseError:
+            license = None
+
+        return {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "is_admin": user.is_admin,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+            },
+            "license": license,
+            "activity": {
+                "context_packages": db.query(ContextPackage).filter(ContextPackage.user_id == user_id).count(),
+                "aios_memories": db.query(AiosMemory).filter(AiosMemory.user_id == user_id, AiosMemory.status == "active").count(),
+                "projects": db.query(Project).filter(Project.user_id == user_id).count(),
+            },
+        }
+    finally:
+        db.close()
+
+
+class SetAdminRoleRequest(BaseModel):
+    is_admin: bool
+
+
+@app.patch("/admin/users/{user_id}/admin")
+def admin_set_admin_role(
+    user_id: int,
+    payload: SetAdminRoleRequest,
+    admin_user_id: int = Depends(require_admin),
+):
+    if user_id == admin_user_id and not payload.is_admin:
+        return {"success": False, "error": "Cannot remove your own admin access"}
+
+    db = get_db_session()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return {"success": False, "error": "User not found"}
+
+        user.is_admin = payload.is_admin
+        db.add(user)
+        db.commit()
+        return {"success": True, "id": user.id, "is_admin": user.is_admin}
+    finally:
+        db.close()
+
+
+@app.post("/admin/users/{user_id}/license/revoke")
+def admin_revoke_license(user_id: int, admin_user_id: int = Depends(require_admin)):
+    db = get_db_session()
+    try:
+        license = (
+            db.query(License)
+            .filter(License.user_id == user_id, License.status == "active")
+            .order_by(License.created_at.desc())
+            .first()
+        )
+        if not license:
+            return {"success": False, "error": "No active license found for this user"}
+
+        license.status = "revoked"
+        db.add(license)
+        db.commit()
+        return {"success": True, "license_id": license.id, "status": "revoked"}
     finally:
         db.close()
 
