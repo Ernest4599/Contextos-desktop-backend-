@@ -1,3 +1,4 @@
+from sqlalchemy.sql import func
 from fastapi import FastAPI, UploadFile, File, Cookie, Response, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -267,7 +268,12 @@ def auth_login(payload: LoginRequest, contextos_anon_id: str | None = Cookie(def
         db = get_db_session()
         token, email = login(db, payload.email, payload.password)
         payload_data = decode_session_token(token)
-        terms_service.link_anon_to_user(db, contextos_anon_id, int(payload_data["sub"]))
+
+        user_id = int(payload_data["sub"])
+        db.query(User).filter(User.id == user_id).update({User.last_login_at: func.now()})
+        db.commit()
+
+        terms_service.link_anon_to_user(db, contextos_anon_id, user_id)
         return {"success": True, "token": token, "email": email}
     except (AuthError, RuntimeError) as e:
         return {"success": False, "error": str(e)}

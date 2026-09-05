@@ -42,3 +42,4 @@ def _run_migrations() -> None:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE aios_memories ADD COLUMN IF NOT EXISTS batch_id VARCHAR"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
