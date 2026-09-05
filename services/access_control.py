@@ -22,9 +22,16 @@ from services.models import License
 
 
 class AccessContext:
-    def __init__(self, user_id: Optional[int], license_id: Optional[int]):
+    def __init__(self, user_id: Optional[int], license_id: Optional[int], via: str):
         self.user_id = user_id
         self.license_id = license_id
+        # "session" = real signed-in Bearer token; "license" = license-key
+        # only. A license can be tied to an account (license.user_id set)
+        # without the request itself being an authenticated session - e.g.
+        # someone bought a plan without ever logging in. Features that must
+        # be signed-in-only (like saving Context Packages) should check
+        # `via == "session"`, not just whether user_id is present.
+        self.via = via
 
 
 def require_access(
@@ -36,7 +43,7 @@ def require_access(
         token = authorization[len("Bearer "):]
         try:
             payload = decode_session_token(token)
-            return AccessContext(user_id=int(payload["sub"]), license_id=None)
+            return AccessContext(user_id=int(payload["sub"]), license_id=None, via="session")
         except AuthError:
             pass  # invalid/expired token - fall through to license check
 
@@ -60,4 +67,4 @@ def require_access(
     if license.expires_at and license.expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="This license has expired.")
 
-    return AccessContext(user_id=license.user_id, license_id=license.id)
+    return AccessContext(user_id=license.user_id, license_id=license.id, via="license")

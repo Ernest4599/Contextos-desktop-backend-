@@ -19,6 +19,13 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 30
 
+# Comma-separated list of emails that should be treated as admins. Checked
+# and applied at login time so no manual DB edit is needed to bootstrap
+# the first admin account - just set this env var to your own email.
+_ADMIN_EMAILS = {
+    e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
+}
+
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -101,6 +108,12 @@ def login(db: Session, email: str, password: str) -> tuple[str, str]:
     if not user or not _verify_password(password, user.password_hash):
         raise AuthError("Incorrect email or password")
 
+    should_be_admin = user.email.lower() in _ADMIN_EMAILS
+    if should_be_admin and not user.is_admin:
+        user.is_admin = True
+        db.add(user)
+        db.commit()
+
     return _create_session_token(user.id, user.email), user.email
 
 
@@ -111,3 +124,4 @@ def get_user_id_from_token(authorization: str) -> int:
     token = authorization[len("Bearer "):]
     payload = decode_session_token(token)
     return int(payload["sub"])
+

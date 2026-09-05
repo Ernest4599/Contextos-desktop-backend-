@@ -9,8 +9,59 @@ from services.message_splitter import split_messages
 from services.file_extractor import extract_file_content, FileExtractionError
 from services.processing_pipeline import run_processing_pipeline
 from services.access_control import require_access, AccessContext
+from services.admin_access import require_admin
+
+import json
+
+
+async def _pipeline_with_autosave(messages, access: AccessContext, source: str):
+    """
+    Wraps run_processing_pipeline to auto-save the resulting Context
+    Package for signed-in users, without processing_pipeline.py itself
+    needing to know about persistence. Every event is passed through to
+    the client unchanged; only the "complete" event is inspected.
+    """
+    from services.processing_pipeline import run_processing_pipeline
+
+    async for chunk in run_processing_pipeline(messages):
+        if access.via == "session" and access.user_id and chunk.startswith("event: complete"):
+            try:
+                data_line = next(line for line in chunk.split("\n") if line.startswith("data:"))
+                data = json.loads(data_line[len("data:"):].strip())
+                package_content = data.get("context_package", "")
+            except (StopIteration, json.JSONDecodeError):
+                package_content = ""
+
+            if package_content:
+                from services.db import get_db_session
+                from services import package_service
+
+                db = None
+                try:
+                    db = get_db_session()
+                    title = package_content.strip().split("\n")[0][:80] or "Context Package"
+                    package_service.save_package(
+                        db, access.user_id, source=source, title=title, content=package_content
+                    )
+                except Exception as e:
+                    print(f"[PACKAGES] Failed to auto-save {source} package: {e}")
+                finally:
+                    if db is not None:
+                        db.close()
+
+        yield chunk
+
 
 app = FastAPI(title="ContextOS Backend")
+
+
+@app.get("/admin/whoami")
+def admin_whoami(admin_user_id: int = Depends(require_admin)):
+    """
+    Phase 1 test route: confirms the admin auth pipeline works end to
+    end before any real admin data endpoints are built on top of it.
+    """
+    return {"success": True, "user_id": admin_user_id, "is_admin": True}
 
 from fastapi.middleware.cors import CORSMiddleware
 from services.security_headers import SecurityHeadersMiddleware
@@ -71,7 +122,7 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
         return {"success": False, "error": e.message}
 
     messages = split_messages(validated)
-    return StreamingResponse(run_processing_pipeline(messages), media_type="text/event-stream")
+    return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
 
 
 @app.post("/process/upload")
@@ -82,7 +133,7 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
     except FileExtractionError as e:
         return {"success": False, "error": e.message}
 
-    return StreamingResponse(run_processing_pipeline(messages), media_type="text/event-stream")
+    return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
 
 
 # TEMPORARY DEBUG: test multiple curl_cffi impersonate values from Render itself
@@ -125,9 +176,26 @@ class QuickPromptRequest(BaseModel):
 @app.post("/quick-prompt")
 async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depends(require_access)):
     from services.quick_prompt import generate_quick_prompt, QuickPromptValidationError, QuickPromptError
+    from services.db import get_db_session
+    from services import package_service
 
     try:
         result = generate_quick_prompt(payload.overview, payload.decisions, payload.task)
+
+        if access.via == "session" and access.user_id and result.get("prompt"):
+            db = None
+            try:
+                db = get_db_session()
+                title = (payload.task or "Quick Prompt").strip() or "Quick Prompt"
+                package_service.save_package(
+                    db, access.user_id, source="quick_prompt", title=title, content=result["prompt"]
+                )
+            except Exception as e:
+                print(f"[PACKAGES] Failed to auto-save quick-prompt package: {e}")
+            finally:
+                if db is not None:
+                    db.close()
+
         return {"success": True, **result}
     except QuickPromptValidationError as e:
         return {"success": False, "error": e.message}
@@ -139,13 +207,13 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
 
 
 @app.post("/process/share-link")
-async def process_share_link(payload: ShareLinkRequest):
+async def process_share_link(payload: ShareLinkRequest, access: AccessContext = Depends(require_access)):
     try:
         messages = await import_from_share_link(payload.url)
     except ShareLinkError as e:
         return {"success": False, "error": e.message}
 
-    return StreamingResponse(run_processing_pipeline(messages), media_type="text/event-stream")
+    return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
 
 
 from services.db import get_db_session, init_db
@@ -443,6 +511,65 @@ def delete_single_project(project_id: int, authorization: str = AiosHeader(defau
         return {"success": False, "error": str(e)}
     except Exception as e:
         print(f"[PROJECTS] Unexpected error in DELETE /projects/id: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+from services import package_service
+
+
+@app.get("/packages")
+def get_packages(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        results = package_service.list_packages(db, user_id)
+        return {"success": True, "packages": results}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[PACKAGES] Unexpected error in GET /packages: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.delete("/packages/{package_id}")
+def delete_single_package(package_id: int, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        package_service.delete_package(db, user_id, package_id)
+        return {"success": True}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except package_service.PackageError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[PACKAGES] Unexpected error in DELETE /packages/id: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/packages/clear")
+def clear_all_packages(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        package_service.clear_packages(db, user_id)
+        return {"success": True}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[PACKAGES] Unexpected error in POST /packages/clear: {e}")
         return {"success": False, "error": "Something went wrong. Please try again."}
     finally:
         if db is not None:
