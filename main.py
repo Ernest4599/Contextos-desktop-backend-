@@ -11,7 +11,7 @@ from services.file_extractor import extract_file_content, FileExtractionError
 from services.processing_pipeline import run_processing_pipeline
 from services.access_control import require_access, AccessContext
 from services.admin_access import require_admin
-from services.models import User, AiosMemory, ContextPackage, SecurityEvent, License, Project
+from services.models import User, AiosMemory, ContextPackage, SecurityEvent, License, Project, LLMProviderEvent
 
 import json
 
@@ -301,6 +301,80 @@ def admin_revoke_license(user_id: int, admin_user_id: int = Depends(require_admi
         db.add(license)
         db.commit()
         return {"success": True, "license_id": license.id, "status": "revoked"}
+    finally:
+        db.close()
+
+
+@app.get("/admin/integrations")
+def admin_integrations(admin_user_id: int = Depends(require_admin)):
+    from sqlalchemy import func as sqla_func
+
+    db = get_db_session()
+    try:
+        rows = (
+            db.query(
+                LLMProviderEvent.provider,
+                LLMProviderEvent.success,
+                sqla_func.count(LLMProviderEvent.id),
+            )
+            .group_by(LLMProviderEvent.provider, LLMProviderEvent.success)
+            .all()
+        )
+
+        stats: dict[str, dict[str, int]] = {}
+        for provider, success, count in rows:
+            entry = stats.setdefault(provider, {"success": 0, "failure": 0})
+            entry["success" if success else "failure"] = count
+
+        providers = [
+            {
+                "provider": provider,
+                "success": counts["success"],
+                "failure": counts["failure"],
+                "total": counts["success"] + counts["failure"],
+            }
+            for provider, counts in stats.items()
+        ]
+
+        return {"providers": providers}
+    finally:
+        db.close()
+
+
+@app.get("/admin/integrations/events")
+def admin_integration_events(
+    admin_user_id: int = Depends(require_admin),
+    limit: int = 50,
+    offset: int = 0,
+    provider: str | None = None,
+):
+    limit = max(1, min(limit, 200))
+    db = get_db_session()
+    try:
+        query = db.query(LLMProviderEvent)
+        if provider:
+            query = query.filter(LLMProviderEvent.provider == provider)
+
+        total = query.count()
+        rows = (
+            query.order_by(LLMProviderEvent.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        events = [
+            {
+                "id": e.id,
+                "provider": e.provider,
+                "success": e.success,
+                "error_message": e.error_message,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in rows
+        ]
+
+        return {"events": events, "total": total, "limit": limit, "offset": offset}
     finally:
         db.close()
 

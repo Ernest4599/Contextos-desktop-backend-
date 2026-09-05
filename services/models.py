@@ -114,3 +114,13 @@ class SecurityEvent(Base):
     ip_hash = Column(String, nullable=True)
     detail = Column(String, nullable=True)  # optional context, e.g. the rate-limited route
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LLMProviderEvent(Base):
+    __tablename__ = "llm_provider_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String, nullable=False)  # anthropic | openai | gemini
+    success = Column(Boolean, nullable=False)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

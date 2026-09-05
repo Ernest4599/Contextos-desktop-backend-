@@ -23,6 +23,26 @@ import requests
 GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again."
 
 
+def _log_provider_event(provider: str, success: bool, error_message: str | None) -> None:
+    """Best-effort logging - never lets a DB hiccup break an LLM call."""
+    try:
+        from services.db import get_db_session
+        from services.models import LLMProviderEvent
+
+        db = get_db_session()
+        try:
+            db.add(LLMProviderEvent(
+                provider=provider,
+                success=success,
+                error_message=error_message[:500] if error_message else None,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[LLM] Failed to log provider event: {e}")
+
+
 class LLMProviderError(Exception):
     pass
 
@@ -155,9 +175,12 @@ def call_llm(system_prompt: str, user_content: str) -> str:
 
         tried_any = True
         try:
-            return _PROVIDERS[name](system_prompt, user_content)
+            result = _PROVIDERS[name](system_prompt, user_content)
+            _log_provider_event(name, True, None)
+            return result
         except LLMProviderError as e:
             print(f"[LLM] Provider {name!r} failed, trying next available provider")
+            _log_provider_event(name, False, str(e))
             last_error = e
             continue
 
