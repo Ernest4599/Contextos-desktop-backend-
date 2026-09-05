@@ -1,5 +1,5 @@
 from sqlalchemy.sql import func
-from fastapi import FastAPI, UploadFile, File, Cookie, Response, Depends
+from fastapi import FastAPI, UploadFile, File, Cookie, Response, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from curl_cffi import requests as crequests
@@ -11,7 +11,7 @@ from services.file_extractor import extract_file_content, FileExtractionError
 from services.processing_pipeline import run_processing_pipeline
 from services.access_control import require_access, AccessContext
 from services.admin_access import require_admin
-from services.models import User, AiosMemory, ContextPackage
+from services.models import User, AiosMemory, ContextPackage, SecurityEvent
 
 import json
 
@@ -83,7 +83,38 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+def _log_rate_limit_and_respond(request: Request, exc: RateLimitExceeded):
+    db = get_db_session()
+    try:
+        client_ip = request.client.host if request.client else None
+        ip_hash = recovery_service.hash_ip(client_ip)
+
+        user_id = None
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                token_payload = decode_session_token(auth_header[len("Bearer "):])
+                user_id = int(token_payload["sub"])
+            except AuthError:
+                pass
+
+        db.add(SecurityEvent(
+            event_type="RATE_LIMIT_EXCEEDED",
+            user_id=user_id,
+            success=False,
+            ip_hash=ip_hash,
+            detail=str(request.url.path),
+        ))
+        db.commit()
+    except Exception as e:
+        print(f"[SECURITY] Failed to log rate limit event: {e}")
+    finally:
+        db.close()
+
+    return _rate_limit_exceeded_handler(request, exc)
+
+
+app.add_exception_handler(RateLimitExceeded, _log_rate_limit_and_respond)
 app.add_middleware(SlowAPIMiddleware)
 
 
@@ -283,15 +314,25 @@ def auth_signup(payload: SignupRequest, contextos_anon_id: str | None = Cookie(d
 
 
 @app.post("/auth/login")
-def auth_login(payload: LoginRequest, contextos_anon_id: str | None = Cookie(default=None)):
+def auth_login(payload: LoginRequest, request: Request, contextos_anon_id: str | None = Cookie(default=None)):
     db = None
     try:
         db = get_db_session()
-        token, email = login(db, payload.email, payload.password)
-        payload_data = decode_session_token(token)
+        client_ip = request.client.host if request.client else None
+        ip_hash = recovery_service.hash_ip(client_ip)
 
+        try:
+            token, email = login(db, payload.email, payload.password)
+        except AuthError:
+            db.add(SecurityEvent(event_type="LOGIN_FAILURE", user_id=None, success=False, ip_hash=ip_hash))
+            db.commit()
+            raise
+
+        payload_data = decode_session_token(token)
         user_id = int(payload_data["sub"])
+
         db.query(User).filter(User.id == user_id).update({User.last_login_at: func.now()})
+        db.add(SecurityEvent(event_type="LOGIN_SUCCESS", user_id=user_id, success=True, ip_hash=ip_hash))
         db.commit()
 
         terms_service.link_anon_to_user(db, contextos_anon_id, user_id)

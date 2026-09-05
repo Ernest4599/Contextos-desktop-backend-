@@ -102,3 +102,15 @@ class ContextPackage(Base):
     preview = Column(String, nullable=False)
     content = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False)  # LOGIN_SUCCESS | LOGIN_FAILURE | RATE_LIMIT_EXCEEDED
+    user_id = Column(Integer, index=True, nullable=True)  # null when the actor isn't known
+    success = Column(Boolean, nullable=False)
+    ip_hash = Column(String, nullable=True)
+    detail = Column(String, nullable=True)  # optional context, e.g. the rate-limited route
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
