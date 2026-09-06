@@ -51,6 +51,34 @@ async def _pipeline_with_autosave(messages, access: AccessContext, source: str):
                     if db is not None:
                         db.close()
 
+        if access.via == "free" and access.installation_id:
+            if chunk.startswith("event: complete"):
+                from services.db import get_db_session
+                from services import free_license_service
+
+                db = None
+                try:
+                    db = get_db_session()
+                    free_license_service.commit_import(db, access.installation_id)
+                except Exception as e:
+                    print(f"[FREE_LICENSE] Failed to commit import: {e}")
+                finally:
+                    if db is not None:
+                        db.close()
+            elif chunk.startswith("event: error"):
+                from services.db import get_db_session
+                from services import free_license_service
+
+                db = None
+                try:
+                    db = get_db_session()
+                    free_license_service.release_import(db, access.installation_id)
+                except Exception as e:
+                    print(f"[FREE_LICENSE] Failed to release import: {e}")
+                finally:
+                    if db is not None:
+                        db.close()
+
         yield chunk
 
 
@@ -482,6 +510,18 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
     except PasteValidationError as e:
         return {"success": False, "error": e.message}
 
+    if access.via == "free":
+        from services.db import get_db_session
+        from services import free_license_service
+
+        db = get_db_session()
+        try:
+            free_license_service.check_and_reserve_import(db, access.installation_id)
+        except free_license_service.FreeLicenseError as e:
+            return {"success": False, "error": e.message}
+        finally:
+            db.close()
+
     messages = split_messages(validated)
     return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
 
@@ -493,6 +533,18 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
         messages = extract_file_content(file.filename, raw_bytes)
     except FileExtractionError as e:
         return {"success": False, "error": e.message}
+
+    if access.via == "free":
+        from services.db import get_db_session
+        from services import free_license_service
+
+        db = get_db_session()
+        try:
+            free_license_service.check_and_reserve_import(db, access.installation_id)
+        except free_license_service.FreeLicenseError as e:
+            return {"success": False, "error": e.message}
+        finally:
+            db.close()
 
     return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
 
@@ -540,6 +592,13 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
     from services.db import get_db_session
     from services import package_service
 
+    if access.via == "free":
+        return {
+            "success": False,
+            "error": "Quick Prompt isn't available on the free plan. Upgrade to Pro to unlock it.",
+            "upgrade_required": True,
+        }
+
     try:
         result = generate_quick_prompt(payload.overview, payload.decisions, payload.task)
 
@@ -573,6 +632,18 @@ async def process_share_link(payload: ShareLinkRequest, access: AccessContext = 
         messages = await import_from_share_link(payload.url)
     except ShareLinkError as e:
         return {"success": False, "error": e.message}
+
+    if access.via == "free":
+        from services.db import get_db_session
+        from services import free_license_service
+
+        db = get_db_session()
+        try:
+            free_license_service.check_and_reserve_import(db, access.installation_id)
+        except free_license_service.FreeLicenseError as e:
+            return {"success": False, "error": e.message}
+        finally:
+            db.close()
 
     return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
 
@@ -1272,6 +1343,67 @@ def verify_license_route(payload: VerifyLicenseRequest):
         return {"success": False, "error": e.message}
     except Exception as e:
         print(f"[LICENSE] Unexpected error in /license/verify: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+from services import free_license_service
+from fastapi import Request as FreeLicenseRequest
+
+
+class FreeLicenseInitRequest(BaseModel):
+    pass
+
+
+INSTALLATION_ID_COOKIE = "contextos_installation_id"
+
+
+@app.post("/free-license/init")
+def free_license_init(
+    request: FreeLicenseRequest,
+    response: Response,
+    contextos_installation_id: str | None = Cookie(default=None),
+):
+    """
+    Called once by the client (first launch, or whenever no local free
+    license state exists) to create or fetch the server-side free-tier
+    record. The installation identifier is server-generated and stored
+    in an httpOnly cookie - never client-generated or JS-readable, so
+    it can't be cleared via localStorage.clear() the way a client-side
+    ID could. Safe to call repeatedly - returns the existing record if
+    one is already there, applying the daily reset if a new day started.
+    """
+    inst_id = (contextos_installation_id or "").strip()
+    is_new = not inst_id
+    if is_new:
+        import secrets
+        inst_id = secrets.token_urlsafe(24)
+
+    client_ip = request.client.host if request.client else None
+    ip_hash = recovery_service.hash_ip(client_ip) if client_ip else None
+
+    db = None
+    try:
+        db = get_db_session()
+        result = free_license_service.get_or_create_free_license(db, inst_id, ip_hash)
+
+        if is_new:
+            response.set_cookie(
+                key=INSTALLATION_ID_COOKIE,
+                value=inst_id,
+                httponly=True,
+                secure=True,
+                samesite="none",
+                max_age=60 * 60 * 24 * 365,
+            )
+
+        return {"success": True, "license": result}
+    except free_license_service.FreeLicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[FREE_LICENSE] Unexpected error in /free-license/init: {e}")
         return {"success": False, "error": "Something went wrong. Please try again."}
     finally:
         if db is not None:

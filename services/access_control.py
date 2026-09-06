@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Cookie, Header, HTTPException
 
 from services.auth_service import decode_session_token, AuthError
 from services.db import get_db_session
@@ -22,7 +22,7 @@ from services.models import License
 
 
 class AccessContext:
-    def __init__(self, user_id: Optional[int], license_id: Optional[int], via: str):
+    def __init__(self, user_id: Optional[int], license_id: Optional[int], via: str, installation_id: Optional[str] = None):
         self.user_id = user_id
         self.license_id = license_id
         # "session" = real signed-in Bearer token; "license" = license-key
@@ -32,24 +32,34 @@ class AccessContext:
         # be signed-in-only (like saving Context Packages) should check
         # `via == "session"`, not just whether user_id is present.
         self.via = via
+        self.installation_id = installation_id
 
 
 def require_access(
     authorization: str = Header(default=""),
     x_license_key: str = Header(default="", alias="X-License-Key"),
+    contextos_installation_id: str | None = Cookie(default=None),
 ) -> AccessContext:
     # Signed-in users are always allowed.
     if authorization.startswith("Bearer "):
         token = authorization[len("Bearer "):]
         try:
             payload = decode_session_token(token)
-            return AccessContext(user_id=int(payload["sub"]), license_id=None, via="session")
+            return AccessContext(user_id=int(payload["sub"]), license_id=None, via="session", installation_id=None)
         except AuthError:
             pass  # invalid/expired token - fall through to license check
 
     # No valid session - require an active, non-expired license key.
     key = (x_license_key or "").strip()
     if not key:
+        # No session, no license key - fall back to the free/no-account
+        # tier, identified by installation_id. Quota is NOT checked here -
+        # this function only identifies access type; each caller decides
+        # whether the free tier is allowed for that specific feature.
+        inst_id = (contextos_installation_id or "").strip()
+        if inst_id:
+            return AccessContext(user_id=None, license_id=None, via="free", installation_id=inst_id)
+
         raise HTTPException(
             status_code=401,
             detail="Sign in or enter a license key to use this feature.",
@@ -67,4 +77,4 @@ def require_access(
     if license.expires_at and license.expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="This license has expired.")
 
-    return AccessContext(user_id=license.user_id, license_id=license.id, via="license")
+    return AccessContext(user_id=license.user_id, license_id=license.id, via="license", installation_id=None)

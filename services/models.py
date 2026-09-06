@@ -124,3 +124,31 @@ class LLMProviderEvent(Base):
     success = Column(Boolean, nullable=False)
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FreeTierLicense(Base):
+    __tablename__ = "free_tier_licenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    installation_id = Column(String, unique=True, index=True, nullable=False)
+    ip_hash = Column(String, index=True, nullable=True)
+    status = Column(String, default="active")  # active | blocked
+    credits_remaining = Column(Integer, nullable=False, default=50)
+    imports_used_today = Column(Integer, nullable=False, default=0)
+    failed_attempts_today = Column(Integer, nullable=False, default=0)
+    last_reset_date = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FreeTierLicense(Base):
+    __tablename__ = "free_tier_licenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    installation_id = Column(String, unique=True, index=True, nullable=False)
+    ip_hash = Column(String, index=True, nullable=True)
+    status = Column(String, default="active")  # active | blocked
+    credits_remaining = Column(Integer, nullable=False, default=50)
+    imports_used_today = Column(Integer, nullable=False, default=0)
+    failed_attempts_today = Column(Integer, nullable=False, default=0)
+    last_reset_date = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
