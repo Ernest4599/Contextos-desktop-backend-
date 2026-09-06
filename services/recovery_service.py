@@ -35,9 +35,10 @@ class RecoveryError(Exception):
 
 
 def _generate_code() -> str:
-    alphabet = string.ascii_uppercase + string.digits
-    segments = ["".join(secrets.choice(alphabet) for _ in range(CODE_SEGMENT_LENGTH)) for _ in range(CODE_SEGMENTS)]
-    return "CTX-" + "-".join(segments)
+    """XXX-XXXX - a plain 7-digit number, grouped for readability. No
+    CTXID prefix, so it's never visually confused with a license key."""
+    digits = "".join(secrets.choice(string.digits) for _ in range(7))
+    return f"{digits[:3]}-{digits[3:]}"
 
 
 def _normalize(code: str) -> str:

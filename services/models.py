@@ -50,6 +50,8 @@ class License(Base):
     status = Column(String, default="pending")  # pending | active | expired | revoked
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=True)
+    installation_id = Column(String, index=True, nullable=True)  # anonymous creation only
+    ip_hash = Column(String, nullable=True)  # anonymous creation only
 
 
 class LicenseRecoveryCode(Base):

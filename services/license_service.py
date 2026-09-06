@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import secrets
 import string
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -18,6 +19,16 @@ from sqlalchemy.orm import Session
 from services.models import License
 
 VALID_PLANS = ["free", "pro", "team"]
+
+# Fixed, branded product-code prefix - not a secret, always the same for
+# every license. Only the trailing digits are randomly generated per key.
+LICENSE_KEY_PREFIX = "CTXID457"
+
+# Anonymous (no-account) creation guard - mirrors the same pattern
+# already used in free_license_service.py. A signed-in user is exempt:
+# these caps only apply when a license is being created with no user_id.
+MAX_ANONYMOUS_LICENSES_PER_INSTALLATION = 1
+MAX_ANONYMOUS_LICENSES_PER_IP_PER_DAY = 3
 
 
 class LicenseError(Exception):
@@ -27,10 +38,10 @@ class LicenseError(Exception):
 
 
 def _generate_license_key() -> str:
-    """CTX-XXXX-XXXX-XXXX style key, cryptographically random."""
-    alphabet = string.ascii_uppercase + string.digits
-    segments = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3)]
-    return "CTX-" + "-".join(segments)
+    """CTXID457-XXXX-XXXX - fixed branded prefix, two random 4-digit
+    segments (cryptographically random) carrying the actual uniqueness."""
+    segments = ["".join(secrets.choice(string.digits) for _ in range(4)) for _ in range(2)]
+    return f"{LICENSE_KEY_PREFIX}-" + "-".join(segments)
 
 
 def _serialize(license: License) -> Dict[str, Any]:
@@ -44,10 +55,48 @@ def _serialize(license: License) -> Dict[str, Any]:
     }
 
 
-def create_license_after_payment(db: Session, user_id: Optional[int], plan: str) -> Dict[str, Any]:
+def _start_of_today() -> datetime:
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def check_anonymous_creation_allowed(
+    db: Session, installation_id: Optional[str], ip_hash: Optional[str]
+) -> None:
+    """
+    Call before creating a license with no user_id (the anonymous path
+    through /license/purchase-with-codes). Raises LicenseError if either
+    cap is exceeded. A signed-in purchase never calls this at all.
+    """
+    if installation_id:
+        existing_count = (
+            db.query(License).filter(License.installation_id == installation_id).count()
+        )
+        if existing_count >= MAX_ANONYMOUS_LICENSES_PER_INSTALLATION:
+            raise LicenseError("You've already created a license on this device.")
+
+    if ip_hash:
+        today_count = (
+            db.query(License)
+            .filter(License.ip_hash == ip_hash, License.created_at >= _start_of_today())
+            .count()
+        )
+        if today_count >= MAX_ANONYMOUS_LICENSES_PER_IP_PER_DAY:
+            raise LicenseError("Too many licenses created from this network today.")
+
+
+def create_license_after_payment(
+    db: Session,
+    user_id: Optional[int],
+    plan: str,
+    installation_id: Optional[str] = None,
+    ip_hash: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Stub for the post-payment step. Real integration will call this from
     a verified payment-provider webhook instead of directly from a route.
+    installation_id/ip_hash are only ever set for anonymous (user_id is
+    None) creations - see check_anonymous_creation_allowed above.
     """
     if plan not in VALID_PLANS:
         raise LicenseError("Unknown plan")
@@ -57,7 +106,14 @@ def create_license_after_payment(db: Session, user_id: Optional[int], plan: str)
     while db.query(License).filter(License.license_key == key).first():
         key = _generate_license_key()
 
-    license = License(license_key=key, user_id=user_id, plan=plan, status="active")
+    license = License(
+        license_key=key,
+        user_id=user_id,
+        plan=plan,
+        status="active",
+        installation_id=installation_id if user_id is None else None,
+        ip_hash=ip_hash if user_id is None else None,
+    )
     db.add(license)
     db.commit()
     db.refresh(license)
