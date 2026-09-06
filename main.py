@@ -218,31 +218,72 @@ def admin_list_users(
     limit: int = 50,
     offset: int = 0,
 ):
+    """
+    Unified list of every account and license-only holder. Two genuinely
+    different kinds of record are merged into one shape so the admin UI
+    can show them in a single, sortable, paginated list:
+      - "account": a row from `users` (email, password, may have a license)
+      - "license_only": a standalone License with no linked user_id -
+        per the no-account architecture, this holder has no email or
+        identity at all, just a license key.
+    Combined in Python rather than a SQL UNION since the two source
+    tables have almost nothing in common to join on.
+    """
     limit = max(1, min(limit, 200))
     db = get_db_session()
     try:
-        query = db.query(User)
+        user_query = db.query(User)
         if search:
-            query = query.filter(User.email.ilike(f"%{search}%"))
+            user_query = user_query.filter(User.email.ilike(f"%{search}%"))
+        accounts = user_query.all()
 
-        total = query.count()
-        users = (
-            query.order_by(User.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+        license_query = db.query(License).filter(License.user_id.is_(None))
+        if search:
+            license_query = license_query.filter(License.license_key.ilike(f"%{search}%"))
+        standalone_licenses = license_query.all()
+
+        combined = [
+            {
+                "type": "account",
+                "id": u.id,
+                "email": u.email,
+                "license_key": None,
+                "plan": None,
+                "status": None,
+                "is_admin": u.is_admin,
+                "created_at": u.created_at,
+                "last_login_at": u.last_login_at,
+            }
+            for u in accounts
+        ] + [
+            {
+                "type": "license_only",
+                "id": None,
+                "email": None,
+                "license_key": lic.license_key,
+                "plan": lic.plan,
+                "status": lic.status,
+                "is_admin": False,
+                "created_at": lic.created_at,
+                "last_login_at": None,
+            }
+            for lic in standalone_licenses
+        ]
+
+        from datetime import datetime as _dt, timezone as _tz
+        _epoch = _dt(1970, 1, 1, tzinfo=_tz.utc)
+        combined.sort(key=lambda row: row["created_at"] or _epoch, reverse=True)
+        total = len(combined)
+        page = combined[offset:offset + limit]
 
         return {
             "users": [
                 {
-                    "id": u.id,
-                    "email": u.email,
-                    "is_admin": u.is_admin,
-                    "created_at": u.created_at.isoformat() if u.created_at else None,
-                    "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+                    **row,
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "last_login_at": row["last_login_at"].isoformat() if row["last_login_at"] else None,
                 }
-                for u in users
+                for row in page
             ],
             "total": total,
             "limit": limit,
