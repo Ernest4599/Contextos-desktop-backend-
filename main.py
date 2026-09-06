@@ -379,6 +379,33 @@ def admin_integration_events(
         db.close()
 
 
+@app.get("/admin/active-users")
+def admin_active_users(admin_user_id: int = Depends(require_admin)):
+    """
+    Daily distinct-user login counts, grouped by calendar day (UTC),
+    covering the full range of available data -- no fixed window.
+    Sourced from SecurityEvent LOGIN_SUCCESS rows, so this only has
+    history back to when Phase 3 logging shipped, not further.
+    """
+    from sqlalchemy import func as sqla_func
+
+    db = get_db_session()
+    try:
+        day_col = sqla_func.date(SecurityEvent.created_at)
+        rows = (
+            db.query(day_col.label("day"), sqla_func.count(sqla_func.distinct(SecurityEvent.user_id)))
+            .filter(SecurityEvent.event_type == "LOGIN_SUCCESS")
+            .group_by(day_col)
+            .order_by(day_col)
+            .all()
+        )
+
+        daily = [{"date": str(day), "active_users": count} for day, count in rows]
+        return {"daily": daily}
+    finally:
+        db.close()
+
+
 @app.get("/")
 def read_root():
     return {"status": "ContextOS backend is running"}
