@@ -65,7 +65,38 @@ def create_license_after_payment(db: Session, user_id: Optional[int], plan: str)
     return _serialize(license)
 
 
+def mask_license_key(key: str) -> str:
+    """CTX-XXXX-XXXX-XXXX -> CTX-****-****-****. Prefix stays visible,
+    everything else hidden - the raw key is only ever returned after a
+    caller has independently verified identity (see /license/reveal)."""
+    parts = key.split("-")
+    if len(parts) < 2:
+        return key
+    return parts[0] + "-" + "-".join("*" * len(p) for p in parts[1:])
+
+
 def get_license_for_user(db: Session, user_id: int) -> Dict[str, Any]:
+    """Display lookup - returns the key MASKED. Used by /license/mine,
+    the admin user-detail view, and rotate_code_route's ownership check
+    (which only reads license_id, never license_key)."""
+    license = (
+        db.query(License)
+        .filter(License.user_id == user_id, License.status.in_(["active", "expired"]))
+        .order_by(License.created_at.desc())
+        .first()
+    )
+    if not license:
+        raise LicenseError("No license found for this account")
+
+    result = _serialize(license)
+    result["license_key"] = mask_license_key(result["license_key"])
+    return result
+
+
+def get_raw_license_for_user(db: Session, user_id: int) -> Dict[str, Any]:
+    """Same lookup as get_license_for_user, but returns the REAL key.
+    Only for use after the caller has already verified the person's
+    identity via password or recovery code - see /license/reveal."""
     license = (
         db.query(License)
         .filter(License.user_id == user_id, License.status.in_(["active", "expired"]))

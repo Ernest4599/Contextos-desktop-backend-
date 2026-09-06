@@ -59,6 +59,15 @@ def _verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
+def verify_user_password(db: Session, user_id: int, password: str) -> bool:
+    """Public entry point for step-up verification (e.g. /license/reveal) -
+    reuses the same check as login, just keyed by user_id instead of email."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return False
+    return _verify_password(password, user.password_hash)
+
+
 def _create_session_token(user_id: int, email: str) -> str:
     if not JWT_SECRET:
         raise AuthError("Sign-in isn't available right now. Please try again later.")

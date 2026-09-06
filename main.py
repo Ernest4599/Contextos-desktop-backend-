@@ -305,6 +305,46 @@ def admin_revoke_license(user_id: int, admin_user_id: int = Depends(require_admi
         db.close()
 
 
+class AdminRevealLicenseRequest(BaseModel):
+    password: str
+
+
+@app.post("/admin/users/{user_id}/license/reveal")
+def admin_reveal_license(
+    user_id: int,
+    payload: AdminRevealLicenseRequest,
+    request: Request,
+    admin_user_id: int = Depends(require_admin),
+):
+    """Admin re-enters THEIR OWN password (not the target user's) to
+    reveal the target user's license key. Logged with both admin and
+    target IDs for audit."""
+    db = get_db_session()
+    try:
+        if not verify_user_password(db, admin_user_id, payload.password):
+            return {"success": False, "error": "Incorrect password"}
+
+        try:
+            license = license_service.get_raw_license_for_user(db, user_id)
+        except license_service.LicenseError as e:
+            return {"success": False, "error": e.message}
+
+        client_ip = request.client.host if request.client else None
+        ip_hash = recovery_service.hash_ip(client_ip)
+        db.add(SecurityEvent(
+            event_type="ADMIN_LICENSE_KEY_REVEALED",
+            user_id=admin_user_id,
+            success=True,
+            ip_hash=ip_hash,
+            detail=f"target_user_id={user_id}",
+        ))
+        db.commit()
+
+        return {"success": True, "license_key": license["license_key"]}
+    finally:
+        db.close()
+
+
 @app.get("/admin/integrations")
 def admin_integrations(admin_user_id: int = Depends(require_admin)):
     from sqlalchemy import func as sqla_func
@@ -538,7 +578,7 @@ async def process_share_link(payload: ShareLinkRequest, access: AccessContext = 
 
 
 from services.db import get_db_session, init_db
-from services.auth_service import signup, login, decode_session_token, AuthError
+from services.auth_service import signup, login, decode_session_token, AuthError, verify_user_password
 from services import terms_service
 from fastapi import Header
 
@@ -1021,6 +1061,67 @@ def purchase_license_with_codes(payload: PurchaseLicenseRequest, authorization: 
 
 class RecoverLicenseRequest(BaseModel):
     code: str
+
+
+class RevealLicenseRequest(BaseModel):
+    method: str  # "password" | "recovery_code"
+    password: str | None = None
+    recovery_code: str | None = None
+    license_id: int | None = None  # required only for the anonymous (no-account) path
+
+
+@app.post("/license/reveal")
+def reveal_license(payload: RevealLicenseRequest, request: Request, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        db = get_db_session()
+        client_ip = request.client.host if request.client else None
+        ip_hash = recovery_service.hash_ip(client_ip)
+
+        try:
+            user_id = _require_user(authorization)
+        except ValueError:
+            user_id = None
+
+        if user_id is not None:
+            license = license_service.get_raw_license_for_user(db, user_id)
+
+            if payload.method == "password":
+                if not payload.password or not verify_user_password(db, user_id, payload.password):
+                    return {"success": False, "error": "Incorrect password"}
+            elif payload.method == "recovery_code":
+                if not payload.recovery_code or not recovery_service.verify_code_ownership(
+                    db, payload.recovery_code, license["license_id"], ip_hash
+                ):
+                    return {"success": False, "error": "Invalid recovery code"}
+            else:
+                return {"success": False, "error": "Invalid verification method"}
+
+            db.add(SecurityEvent(event_type="LICENSE_KEY_REVEALED", user_id=user_id, success=True, ip_hash=ip_hash))
+            db.commit()
+            return {"success": True, "license_key": license["license_key"]}
+
+        if not payload.license_id or not payload.recovery_code:
+            return {"success": False, "error": "License ID and recovery code are required"}
+
+        if not recovery_service.verify_code_ownership(db, payload.recovery_code, payload.license_id, ip_hash):
+            return {"success": False, "error": "Invalid recovery code"}
+
+        license_row = db.query(License).filter(License.id == payload.license_id).first()
+        if not license_row:
+            return {"success": False, "error": "License not found"}
+
+        db.add(SecurityEvent(event_type="LICENSE_KEY_REVEALED", user_id=None, success=True, ip_hash=ip_hash))
+        db.commit()
+        return {"success": True, "license_key": license_row.license_key}
+    except license_service.LicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[LICENSE] Unexpected error in /license/reveal: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
 
 
 @app.post("/license/recover")

@@ -167,6 +167,39 @@ def recover_license(db: Session, submitted_code: str, ip_hash: str | None) -> Di
     }
 
 
+def verify_code_ownership(db: Session, code: str, license_id: int, ip_hash: str | None) -> bool:
+    """
+    Proof-of-possession check for revealing an already-known key - checks
+    `code` against license_id's UNUSED recovery codes WITHOUT marking one
+    used. This is deliberately separate from recover_license(), which
+    consumes a code; revealing a key you already have shouldn't burn down
+    the same limited codes meant for actual account recovery. Reuses the
+    same lockout/rate-limit and audit logging as the real recovery flow.
+    """
+    if _is_locked_out(db, ip_hash):
+        _log_event(db, license_id, "REVEAL_LOCKED", False, ip_hash)
+        return False
+
+    normalized = _normalize(code)
+    if not normalized:
+        _log_event(db, license_id, "REVEAL_FAILURE", False, ip_hash)
+        return False
+
+    candidates = (
+        db.query(LicenseRecoveryCode)
+        .filter(LicenseRecoveryCode.license_id == license_id, LicenseRecoveryCode.status == "unused")
+        .all()
+    )
+
+    for candidate in candidates:
+        if _verify_code(normalized, candidate.code_hash):
+            _log_event(db, license_id, "REVEAL_SUCCESS", True, ip_hash)
+            return True
+
+    _log_event(db, license_id, "REVEAL_FAILURE", False, ip_hash)
+    return False
+
+
 def rotate_recovery_code(db: Session, license_id: int) -> str:
     """Generates one new code to replace a used one, keeping max 4 active."""
     new_code = _generate_code()
