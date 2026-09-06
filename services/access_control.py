@@ -22,9 +22,14 @@ from services.models import License
 
 
 class AccessContext:
-    def __init__(self, user_id: Optional[int], license_id: Optional[int], via: str, installation_id: Optional[str] = None):
+    def __init__(self, user_id: Optional[int], license_id: Optional[int], via: str, installation_id: Optional[str] = None, plan: Optional[str] = None):
         self.user_id = user_id
         self.license_id = license_id
+        # Plan of the resolved license, when via == "license" (e.g. "free",
+        # "pro", "team"). None for via == "session" or via == "free" - a
+        # signed-in session is allowed regardless of plan per this file's
+        # docstring, and the no-account free tier has no License row at all.
+        self.plan = plan
         # "session" = real signed-in Bearer token; "license" = license-key
         # only. A license can be tied to an account (license.user_id set)
         # without the request itself being an authenticated session - e.g.
@@ -77,4 +82,4 @@ def require_access(
     if license.expires_at and license.expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="This license has expired.")
 
-    return AccessContext(user_id=license.user_id, license_id=license.id, via="license", installation_id=None)
+    return AccessContext(user_id=license.user_id, license_id=license.id, via="license", installation_id=None, plan=license.plan)

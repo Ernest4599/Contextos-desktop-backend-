@@ -592,7 +592,7 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
     from services.db import get_db_session
     from services import package_service
 
-    if access.via == "free":
+    if access.via == "free" or access.plan == "free":
         return {
             "success": False,
             "error": "Quick Prompt isn't available on the free plan. Upgrade to Pro to unlock it.",
