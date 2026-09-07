@@ -85,7 +85,7 @@ def check_and_reserve_credits(db: Session, license_id: int, cost: int = CREDIT_C
 
     if lic.credits_remaining < cost:
         db.rollback()
-        raise LicenseError("You've reached your Pro usage limit.")
+        raise LicenseError("You've reached your usage limit.")
 
     lic.credits_remaining -= cost
     db.commit()
