@@ -30,6 +30,14 @@ LICENSE_KEY_PREFIX = "CTXID457"
 MAX_ANONYMOUS_LICENSES_PER_INSTALLATION = 1
 MAX_ANONYMOUS_LICENSES_PER_IP_PER_DAY = 3
 
+# Metered-usage plans. Only plans listed here get credits initialized at
+# creation and checked before Quick Prompt / Import; any other plan
+# (e.g. "free", "team" until added here) has no credit gate at all -
+# either fully blocked (free, via the existing plan == "free" check) or
+# fully unlimited once licensed (team, today).
+PLAN_CREDIT_LIMITS = {"pro": 300}
+CREDIT_COST_PER_ACTION = 5  # Quick Prompt or Import - same cost either way. Credits do not auto-refill.
+
 
 class LicenseError(Exception):
     def __init__(self, message: str):
@@ -42,6 +50,57 @@ def _generate_license_key() -> str:
     segments (cryptographically random) carrying the actual uniqueness."""
     segments = ["".join(secrets.choice(string.digits) for _ in range(4)) for _ in range(2)]
     return f"{LICENSE_KEY_PREFIX}-" + "-".join(segments)
+
+
+def _lock_license_by_id(db: Session, license_id: int) -> License:
+    """Row-level lock so concurrent Pro requests on the same license
+    can't both pass the credit check before either commits."""
+    lic = db.query(License).filter(License.id == license_id).with_for_update().first()
+    if not lic:
+        raise LicenseError("License not found")
+    return lic
+
+
+def check_and_reserve_credits(db: Session, license_id: int, cost: int = CREDIT_COST_PER_ACTION) -> Dict[str, Any]:
+    """Call before a Pro-gated action (Quick Prompt or Import). Raises
+    LicenseError if blocked, otherwise atomically reserves the credits
+    and returns the updated license state. Caller must follow with
+    commit_credits() on success or release_credits() on failure -
+    mirrors free_license_service.py's reserve/commit/release pattern."""
+    lic = _lock_license_by_id(db, license_id)
+
+    if lic.status != "active":
+        db.rollback()
+        raise LicenseError("This license is not active.")
+
+    if lic.credits_remaining is None:
+        db.rollback()
+        raise LicenseError("This plan doesn't include metered usage.")
+
+    if lic.credits_remaining < cost:
+        db.rollback()
+        raise LicenseError("You've reached your Pro usage limit.")
+
+    lic.credits_remaining -= cost
+    db.commit()
+    db.refresh(lic)
+    return _serialize(lic)
+
+
+def commit_credits(db: Session, license_id: int) -> None:
+    """No-op on the counters (already reserved) - kept as an explicit
+    call site so success is logged/traceable if you add that later."""
+    return None
+
+
+def release_credits(db: Session, license_id: int, cost: int = CREDIT_COST_PER_ACTION) -> Dict[str, Any]:
+    """Call on action failure. Refunds the reserved credits so a
+    server/API failure never costs the user their Pro usage."""
+    lic = _lock_license_by_id(db, license_id)
+    lic.credits_remaining = (lic.credits_remaining or 0) + cost
+    db.commit()
+    db.refresh(lic)
+    return _serialize(lic)
 
 
 def _serialize(license: License) -> Dict[str, Any]:
@@ -113,6 +172,7 @@ def create_license_after_payment(
         status="active",
         installation_id=installation_id if user_id is None else None,
         ip_hash=ip_hash if user_id is None else None,
+        credits_remaining=PLAN_CREDIT_LIMITS.get(plan),
     )
     db.add(license)
     db.commit()

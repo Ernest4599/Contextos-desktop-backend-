@@ -52,6 +52,7 @@ class License(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
     installation_id = Column(String, index=True, nullable=True)  # anonymous creation only
     ip_hash = Column(String, nullable=True)  # anonymous creation only
+    credits_remaining = Column(Integer, nullable=True)  # only set for metered plans (pro) - see PLAN_CREDIT_LIMITS
 
 
 class LicenseRecoveryCode(Base):

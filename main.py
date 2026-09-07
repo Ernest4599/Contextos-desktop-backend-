@@ -16,7 +16,7 @@ from services.models import User, AiosMemory, ContextPackage, SecurityEvent, Lic
 import json
 
 
-async def _pipeline_with_autosave(messages, access: AccessContext, source: str):
+async def _pipeline_with_autosave(messages, access: AccessContext, source: str, is_metered: bool = False, license_id: int | None = None):
     """
     Wraps run_processing_pipeline to auto-save the resulting Context
     Package for signed-in users, without processing_pipeline.py itself
@@ -75,6 +75,31 @@ async def _pipeline_with_autosave(messages, access: AccessContext, source: str):
                     free_license_service.release_import(db, access.installation_id)
                 except Exception as e:
                     print(f"[FREE_LICENSE] Failed to release import: {e}")
+                finally:
+                    if db is not None:
+                        db.close()
+
+        if is_metered and license_id:
+            from services.db import get_db_session
+            from services import license_service
+
+            if chunk.startswith("event: complete"):
+                db = None
+                try:
+                    db = get_db_session()
+                    license_service.commit_credits(db, license_id)
+                except Exception as e:
+                    print(f"[LICENSE] Failed to commit credits: {e}")
+                finally:
+                    if db is not None:
+                        db.close()
+            elif chunk.startswith("event: error"):
+                db = None
+                try:
+                    db = get_db_session()
+                    license_service.release_credits(db, license_id)
+                except Exception as e:
+                    print(f"[LICENSE] Failed to release credits: {e}")
                 finally:
                     if db is not None:
                         db.close()
@@ -526,14 +551,65 @@ class ShareLinkRequest(BaseModel):
 
 @app.post("/import/share-link")
 async def import_share_link(payload: ShareLinkRequest, access: AccessContext = Depends(require_access)):
+    from services.db import get_db_session
+    from services import free_license_service
+    from services import license_service
+
+    is_metered = access.plan in license_service.PLAN_CREDIT_LIMITS and access.license_id is not None
+    reserved = False
+
+    if access.via == "free" and access.installation_id:
+        db = get_db_session()
+        try:
+            free_license_service.check_and_reserve_import(db, access.installation_id)
+        except free_license_service.FreeLicenseError as e:
+            return {"success": False, "error": e.message}
+        finally:
+            db.close()
+    elif is_metered:
+        db = get_db_session()
+        try:
+            license_service.check_and_reserve_credits(db, access.license_id)
+            reserved = True
+        except license_service.LicenseError as e:
+            return {"success": False, "error": e.message}
+        finally:
+            db.close()
+
     try:
         messages = await import_from_share_link(payload.url)
+
+        if access.via == "free" and access.installation_id:
+            db = get_db_session()
+            try:
+                free_license_service.commit_import(db, access.installation_id)
+            finally:
+                db.close()
+        elif is_metered and reserved:
+            db = get_db_session()
+            try:
+                license_service.commit_credits(db, access.license_id)
+            finally:
+                db.close()
+
         return {
             "success": True,
             "message_count": len(messages),
             "messages": messages,
         }
     except ShareLinkError as e:
+        if access.via == "free" and access.installation_id:
+            db = get_db_session()
+            try:
+                free_license_service.release_import(db, access.installation_id)
+            finally:
+                db.close()
+        elif is_metered and reserved:
+            db = get_db_session()
+            try:
+                license_service.release_credits(db, access.license_id)
+            finally:
+                db.close()
         return {
             "success": False,
             "error": e.message,
@@ -551,6 +627,7 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
     except PasteValidationError as e:
         return {"success": False, "error": e.message}
 
+    is_metered = False
     if access.via == "free":
         from services.db import get_db_session
         from services import free_license_service
@@ -562,9 +639,25 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
             return {"success": False, "error": e.message}
         finally:
             db.close()
+    else:
+        from services.db import get_db_session
+        from services import license_service
+
+        is_metered = access.plan in license_service.PLAN_CREDIT_LIMITS and access.license_id is not None
+        if is_metered:
+            db = get_db_session()
+            try:
+                license_service.check_and_reserve_credits(db, access.license_id)
+            except license_service.LicenseError as e:
+                return {"success": False, "error": e.message}
+            finally:
+                db.close()
 
     messages = split_messages(validated)
-    return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
+    return StreamingResponse(
+        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id),
+        media_type="text/event-stream",
+    )
 
 
 @app.post("/process/upload")
@@ -575,6 +668,7 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
     except FileExtractionError as e:
         return {"success": False, "error": e.message}
 
+    is_metered = False
     if access.via == "free":
         from services.db import get_db_session
         from services import free_license_service
@@ -586,8 +680,24 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
             return {"success": False, "error": e.message}
         finally:
             db.close()
+    else:
+        from services.db import get_db_session
+        from services import license_service
 
-    return StreamingResponse(_pipeline_with_autosave(messages, access, source="import"), media_type="text/event-stream")
+        is_metered = access.plan in license_service.PLAN_CREDIT_LIMITS and access.license_id is not None
+        if is_metered:
+            db = get_db_session()
+            try:
+                license_service.check_and_reserve_credits(db, access.license_id)
+            except license_service.LicenseError as e:
+                return {"success": False, "error": e.message}
+            finally:
+                db.close()
+
+    return StreamingResponse(
+        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id),
+        media_type="text/event-stream",
+    )
 
 
 # TEMPORARY DEBUG: test multiple curl_cffi impersonate values from Render itself
@@ -632,6 +742,7 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
     from services.quick_prompt import generate_quick_prompt, QuickPromptValidationError, QuickPromptError
     from services.db import get_db_session
     from services import package_service
+    from services import license_service
 
     if access.via == "free" or access.plan == "free":
         return {
@@ -640,8 +751,28 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
             "upgrade_required": True,
         }
 
+    is_metered = access.plan in license_service.PLAN_CREDIT_LIMITS and access.license_id is not None
+    reserved = False
+
     try:
+        if is_metered:
+            credit_db = get_db_session()
+            try:
+                license_service.check_and_reserve_credits(credit_db, access.license_id)
+                reserved = True
+            except license_service.LicenseError as e:
+                return {"success": False, "error": e.message}
+            finally:
+                credit_db.close()
+
         result = generate_quick_prompt(payload.overview, payload.decisions, payload.task)
+
+        if is_metered:
+            commit_db = get_db_session()
+            try:
+                license_service.commit_credits(commit_db, access.license_id)
+            finally:
+                commit_db.close()
 
         if access.via == "session" and access.user_id and result.get("prompt"):
             db = None
@@ -659,10 +790,28 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
 
         return {"success": True, **result}
     except QuickPromptValidationError as e:
+        if is_metered and reserved:
+            release_db = get_db_session()
+            try:
+                license_service.release_credits(release_db, access.license_id)
+            finally:
+                release_db.close()
         return {"success": False, "error": e.message}
     except QuickPromptError as e:
+        if is_metered and reserved:
+            release_db = get_db_session()
+            try:
+                license_service.release_credits(release_db, access.license_id)
+            finally:
+                release_db.close()
         return {"success": False, "error": str(e)}
     except Exception as e:
+        if is_metered and reserved:
+            release_db = get_db_session()
+            try:
+                license_service.release_credits(release_db, access.license_id)
+            finally:
+                release_db.close()
         print(f"[QUICK_PROMPT] Unexpected error: {e}")
         return {"success": False, "error": "Something went wrong. Please try again."}
 

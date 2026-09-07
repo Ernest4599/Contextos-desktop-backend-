@@ -45,12 +45,33 @@ def require_access(
     x_license_key: str = Header(default="", alias="X-License-Key"),
     contextos_installation_id: str | None = Cookie(default=None),
 ) -> AccessContext:
-    # Signed-in users are always allowed.
+    # Signed-in users are always allowed. Also resolve their license
+    # (if any) so per-plan credit metering (e.g. Pro) applies to them
+    # too - being signed in must never mean unmetered usage on a
+    # metered plan, it only means access itself is never blocked here.
     if authorization.startswith("Bearer "):
         token = authorization[len("Bearer "):]
         try:
             payload = decode_session_token(token)
-            return AccessContext(user_id=int(payload["sub"]), license_id=None, via="session", installation_id=None)
+            user_id = int(payload["sub"])
+
+            license_id = None
+            plan = None
+            db = get_db_session()
+            try:
+                owned_license = (
+                    db.query(License)
+                    .filter(License.user_id == user_id, License.status == "active")
+                    .order_by(License.created_at.desc())
+                    .first()
+                )
+                if owned_license:
+                    license_id = owned_license.id
+                    plan = owned_license.plan
+            finally:
+                db.close()
+
+            return AccessContext(user_id=user_id, license_id=license_id, via="session", installation_id=None, plan=plan)
         except AuthError:
             pass  # invalid/expired token - fall through to license check
 

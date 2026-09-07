@@ -45,3 +45,4 @@ def _run_migrations() -> None:
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS installation_id VARCHAR"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS ip_hash VARCHAR"))
+        conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS credits_remaining INTEGER"))
