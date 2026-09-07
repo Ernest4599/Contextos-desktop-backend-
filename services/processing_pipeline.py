@@ -27,7 +27,7 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-async def run_processing_pipeline(messages: List[Dict[str, str]]):
+async def run_processing_pipeline(messages: List[Dict[str, str]], allowed_providers: list[str] | None = None):
     total = len(messages)
 
     yield _sse("step", {"step": "reading_conversation", "status": "start"})
@@ -38,7 +38,7 @@ async def run_processing_pipeline(messages: List[Dict[str, str]]):
     yield _sse("step", {"step": "detecting_topics", "status": "start"})
 
     try:
-        extracted = extract_context(messages)
+        extracted = extract_context(messages, allowed_providers=allowed_providers)
     except ExtractionError as e:
         yield _sse("error", {"message": str(e)})
         return

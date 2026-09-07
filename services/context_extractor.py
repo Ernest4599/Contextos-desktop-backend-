@@ -46,12 +46,12 @@ def _messages_to_transcript(messages: List[Dict[str, str]]) -> str:
     return "\n\n".join(lines)
 
 
-def extract_context(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+def extract_context(messages: List[Dict[str, str]], allowed_providers: list[str] | None = None) -> Dict[str, Any]:
     transcript = _messages_to_transcript(messages)
     if not transcript.strip():
         raise ExtractionError("No message content to extract from")
 
-    raw = call_llm(EXTRACTION_SYSTEM_PROMPT, transcript)
+    raw = call_llm(EXTRACTION_SYSTEM_PROMPT, transcript, allowed_providers=allowed_providers)
     parsed = parse_llm_json(raw)
 
     result: Dict[str, Any] = {}

@@ -16,7 +16,7 @@ from services.models import User, AiosMemory, ContextPackage, SecurityEvent, Lic
 import json
 
 
-async def _pipeline_with_autosave(messages, access: AccessContext, source: str, is_metered: bool = False, license_id: int | None = None):
+async def _pipeline_with_autosave(messages, access: AccessContext, source: str, is_metered: bool = False, license_id: int | None = None, allowed_providers: list[str] | None = None):
     """
     Wraps run_processing_pipeline to auto-save the resulting Context
     Package for signed-in users, without processing_pipeline.py itself
@@ -25,7 +25,7 @@ async def _pipeline_with_autosave(messages, access: AccessContext, source: str, 
     """
     from services.processing_pipeline import run_processing_pipeline
 
-    async for chunk in run_processing_pipeline(messages):
+    async for chunk in run_processing_pipeline(messages, allowed_providers=allowed_providers):
         if access.via == "session" and access.user_id and chunk.startswith("event: complete"):
             try:
                 data_line = next(line for line in chunk.split("\n") if line.startswith("data:"))
@@ -627,6 +627,8 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
     except PasteValidationError as e:
         return {"success": False, "error": e.message}
 
+    from services import license_service
+
     is_metered = False
     if access.via == "free":
         from services.db import get_db_session
@@ -641,7 +643,6 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
             db.close()
     else:
         from services.db import get_db_session
-        from services import license_service
 
         is_metered = access.plan in license_service.PLAN_CREDIT_LIMITS and access.license_id is not None
         if is_metered:
@@ -654,8 +655,9 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
                 db.close()
 
     messages = split_messages(validated)
+    allowed_providers = license_service.PLAN_PROVIDERS.get(access.plan)
     return StreamingResponse(
-        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id),
+        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers),
         media_type="text/event-stream",
     )
 
@@ -667,6 +669,8 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
         messages = extract_file_content(file.filename, raw_bytes)
     except FileExtractionError as e:
         return {"success": False, "error": e.message}
+
+    from services import license_service
 
     is_metered = False
     if access.via == "free":
@@ -682,7 +686,6 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
             db.close()
     else:
         from services.db import get_db_session
-        from services import license_service
 
         is_metered = access.plan in license_service.PLAN_CREDIT_LIMITS and access.license_id is not None
         if is_metered:
@@ -694,8 +697,9 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
             finally:
                 db.close()
 
+    allowed_providers = license_service.PLAN_PROVIDERS.get(access.plan)
     return StreamingResponse(
-        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id),
+        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers),
         media_type="text/event-stream",
     )
 
@@ -765,7 +769,8 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
             finally:
                 credit_db.close()
 
-        result = generate_quick_prompt(payload.overview, payload.decisions, payload.task)
+        allowed_providers = license_service.PLAN_PROVIDERS.get(access.plan)
+        result = generate_quick_prompt(payload.overview, payload.decisions, payload.task, allowed_providers=allowed_providers)
 
         if is_metered:
             commit_db = get_db_session()

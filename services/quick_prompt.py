@@ -67,7 +67,7 @@ def validate_quick_prompt_input(overview: str, decisions: str, task: str) -> Non
             raise QuickPromptValidationError(f"{field_name} is too long — please trim it")
 
 
-def generate_quick_prompt(overview: str, decisions: str, task: str) -> Dict[str, Any]:
+def generate_quick_prompt(overview: str, decisions: str, task: str, allowed_providers: list[str] | None = None) -> Dict[str, Any]:
     validate_quick_prompt_input(overview, decisions, task)
 
     user_content = (
@@ -76,7 +76,7 @@ def generate_quick_prompt(overview: str, decisions: str, task: str) -> Dict[str,
         f"TASK:\n{(task or '').strip()}"
     )
 
-    raw = call_llm(QUICK_PROMPT_SYSTEM_PROMPT, user_content)
+    raw = call_llm(QUICK_PROMPT_SYSTEM_PROMPT, user_content, allowed_providers=allowed_providers)
     parsed = parse_llm_json(raw)
 
     return {

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from services.models import License
 
-VALID_PLANS = ["free", "pro", "team"]
+VALID_PLANS = ["free", "pro", "more_context", "team"]
 
 # Fixed, branded product-code prefix - not a secret, always the same for
 # every license. Only the trailing digits are randomly generated per key.
@@ -35,8 +35,14 @@ MAX_ANONYMOUS_LICENSES_PER_IP_PER_DAY = 3
 # (e.g. "free", "team" until added here) has no credit gate at all -
 # either fully blocked (free, via the existing plan == "free" check) or
 # fully unlimited once licensed (team, today).
-PLAN_CREDIT_LIMITS = {"pro": 300}
+PLAN_CREDIT_LIMITS = {"pro": 300, "more_context": 600}
 CREDIT_COST_PER_ACTION = 5  # Quick Prompt or Import - same cost either way. Credits do not auto-refill.
+
+# Provider restriction per plan. A plan not listed here has no
+# restriction at all (existing behavior, unchanged) - call_llm falls
+# back to its normal LLM_PROVIDER env-based order. Only listed plans
+# get their provider order filtered.
+PLAN_PROVIDERS = {"more_context": ["anthropic", "openai"]}
 
 
 class LicenseError(Exception):

@@ -155,7 +155,7 @@ _PROVIDER_KEY_ENV = {
 _PROVIDER_ORDER = ["anthropic", "openai", "gemini"]
 
 
-def call_llm(system_prompt: str, user_content: str) -> str:
+def call_llm(system_prompt: str, user_content: str, allowed_providers: list[str] | None = None) -> str:
     preferred = os.environ.get("LLM_PROVIDER", "").lower()
 
     order: list[str] = []
@@ -164,6 +164,9 @@ def call_llm(system_prompt: str, user_content: str) -> str:
     for name in _PROVIDER_ORDER:
         if name not in order:
             order.append(name)
+
+    if allowed_providers is not None:
+        order = [name for name in order if name in allowed_providers]
 
     last_error: LLMProviderError | None = None
     tried_any = False
