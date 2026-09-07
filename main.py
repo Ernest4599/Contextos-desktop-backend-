@@ -1091,12 +1091,21 @@ class PurchaseLicenseRequest(BaseModel):
 
 
 @app.post("/license/purchase")
-def purchase_license(payload: PurchaseLicenseRequest, authorization: str = AiosHeader(default="")):
+def purchase_license(
+    payload: PurchaseLicenseRequest,
+    request: Request,
+    response: Response,
+    authorization: str = AiosHeader(default=""),
+    contextos_installation_id: str | None = Cookie(default=None),
+):
     """
     Stubbed purchase endpoint: skips real payment for now and immediately
     creates an active license linked to the authenticated account, or
     with no account if not signed in (standalone path completed later
-    once recovery codes exist).
+    once recovery codes exist). Anonymous creation is guarded by the
+    same installation_id cookie the free tier uses (issued here if it
+    doesn't exist yet) plus a per-IP daily cap - see
+    check_anonymous_creation_allowed in license_service.py.
     """
     db = None
     try:
@@ -1106,7 +1115,29 @@ def purchase_license(payload: PurchaseLicenseRequest, authorization: str = AiosH
             user_id = None
 
         db = get_db_session()
-        result = license_service.create_license_after_payment(db, user_id, payload.plan)
+
+        installation_id = None
+        ip_hash = None
+        if user_id is None:
+            installation_id = (contextos_installation_id or "").strip()
+            if not installation_id:
+                import secrets
+                installation_id = secrets.token_urlsafe(24)
+                response.set_cookie(
+                    key=INSTALLATION_ID_COOKIE,
+                    value=installation_id,
+                    httponly=True,
+                    secure=True,
+                    samesite="none",
+                    max_age=60 * 60 * 24 * 365,
+                )
+            client_ip = request.client.host if request.client else None
+            ip_hash = recovery_service.hash_ip(client_ip) if client_ip else None
+            license_service.check_anonymous_creation_allowed(db, installation_id, ip_hash)
+
+        result = license_service.create_license_after_payment(
+            db, user_id, payload.plan, installation_id=installation_id, ip_hash=ip_hash
+        )
         return {"success": True, "license": result}
     except license_service.LicenseError as e:
         return {"success": False, "error": e.message}
@@ -1143,12 +1174,18 @@ from services import recovery_service
 
 
 @app.post("/license/purchase-with-codes")
-def purchase_license_with_codes(payload: PurchaseLicenseRequest, authorization: str = AiosHeader(default="")):
+def purchase_license_with_codes(
+    payload: PurchaseLicenseRequest,
+    request: Request,
+    response: Response,
+    authorization: str = AiosHeader(default=""),
+    contextos_installation_id: str | None = Cookie(default=None),
+):
     """
     Same as /license/purchase, but also generates and returns the 4 raw
     recovery codes - this is the ONLY response that will ever contain
     them. The frontend must show them immediately and never expect to
-    fetch them again.
+    fetch them again. Same anonymous-creation guard as /license/purchase.
     """
     db = None
     try:
@@ -1158,7 +1195,29 @@ def purchase_license_with_codes(payload: PurchaseLicenseRequest, authorization: 
             user_id = None
 
         db = get_db_session()
-        license_result = license_service.create_license_after_payment(db, user_id, payload.plan)
+
+        installation_id = None
+        ip_hash = None
+        if user_id is None:
+            installation_id = (contextos_installation_id or "").strip()
+            if not installation_id:
+                import secrets
+                installation_id = secrets.token_urlsafe(24)
+                response.set_cookie(
+                    key=INSTALLATION_ID_COOKIE,
+                    value=installation_id,
+                    httponly=True,
+                    secure=True,
+                    samesite="none",
+                    max_age=60 * 60 * 24 * 365,
+                )
+            client_ip = request.client.host if request.client else None
+            ip_hash = recovery_service.hash_ip(client_ip) if client_ip else None
+            license_service.check_anonymous_creation_allowed(db, installation_id, ip_hash)
+
+        license_result = license_service.create_license_after_payment(
+            db, user_id, payload.plan, installation_id=installation_id, ip_hash=ip_hash
+        )
         raw_codes = recovery_service.generate_recovery_codes(db, license_result["license_id"])
         return {"success": True, "license": license_result, "recovery_codes": raw_codes}
     except license_service.LicenseError as e:
