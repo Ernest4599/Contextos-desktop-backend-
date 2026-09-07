@@ -955,6 +955,34 @@ def _require_user(authorization: str) -> int:
         raise ValueError(e.message)
 
 
+def _require_aios_access(user_id: int) -> None:
+    """Raises ValueError (caught the same way as _require_user's errors
+    by every caller below) if the user's plan doesn't include AIOS.
+    Lazily provisions a Start Free license first if the user has none
+    yet, mirroring what require_access does for the metered routes."""
+    from services.db import get_db_session
+    from services import license_service
+
+    db = get_db_session()
+    try:
+        license = (
+            db.query(License)
+            .filter(License.user_id == user_id, License.status == "active")
+            .order_by(License.created_at.desc())
+            .first()
+        )
+        if license:
+            plan = license.plan
+        else:
+            created = license_service.get_or_create_free_license_for_user(db, user_id)
+            plan = created["plan"]
+    finally:
+        db.close()
+
+    if plan == "free":
+        raise ValueError("AIOS isn't available on your plan. Upgrade to unlock it.")
+
+
 class TellAiosRequest(BaseModel):
     content: str
 
@@ -968,6 +996,7 @@ def aios_tell(payload: TellAiosRequest, authorization: str = AiosHeader(default=
     db = None
     try:
         user_id = _require_user(authorization)
+        _require_aios_access(user_id)
         db = get_db_session()
         result = aios_service.tell_aios(db, user_id, payload.content)
         return {"success": True, **result}
@@ -988,6 +1017,7 @@ def aios_overview(authorization: str = AiosHeader(default="")):
     db = None
     try:
         user_id = _require_user(authorization)
+        _require_aios_access(user_id)
         db = get_db_session()
         result = aios_service.get_overview(db, user_id)
         return {"success": True, **result}
@@ -1006,6 +1036,7 @@ def aios_memories(category: str | None = None, authorization: str = AiosHeader(d
     db = None
     try:
         user_id = _require_user(authorization)
+        _require_aios_access(user_id)
         db = get_db_session()
         results = aios_service.get_memories(db, user_id, category)
         return {"success": True, "memories": results}
@@ -1024,6 +1055,7 @@ def aios_update_memory(memory_id: int, payload: UpdateMemoryRequest, authorizati
     db = None
     try:
         user_id = _require_user(authorization)
+        _require_aios_access(user_id)
         db = get_db_session()
         result = aios_service.update_memory(db, user_id, memory_id, payload.content)
         return {"success": True, **result}
@@ -1044,6 +1076,7 @@ def aios_delete_memory(memory_id: int, authorization: str = AiosHeader(default="
     db = None
     try:
         user_id = _require_user(authorization)
+        _require_aios_access(user_id)
         db = get_db_session()
         aios_service.delete_memory(db, user_id, memory_id)
         return {"success": True}
@@ -1068,6 +1101,7 @@ def aios_quick_prompt(payload: AiosQuickPromptRequest, authorization: str = Aios
     db = None
     try:
         user_id = _require_user(authorization)
+        _require_aios_access(user_id)
         db = get_db_session()
         result = aios_service.generate_aios_quick_prompt(db, user_id, payload.message)
 

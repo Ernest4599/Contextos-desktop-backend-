@@ -68,6 +68,11 @@ def require_access(
                 if owned_license:
                     license_id = owned_license.id
                     plan = owned_license.plan
+                else:
+                    from services import license_service
+                    created = license_service.get_or_create_free_license_for_user(db, user_id)
+                    license_id = created["license_id"]
+                    plan = created["plan"]
             finally:
                 db.close()
 

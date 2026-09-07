@@ -35,14 +35,14 @@ MAX_ANONYMOUS_LICENSES_PER_IP_PER_DAY = 3
 # (e.g. "free", "team" until added here) has no credit gate at all -
 # either fully blocked (free, via the existing plan == "free" check) or
 # fully unlimited once licensed (team, today).
-PLAN_CREDIT_LIMITS = {"pro": 300, "more_context": 600}
+PLAN_CREDIT_LIMITS = {"free": 60, "pro": 300, "more_context": 600}
 CREDIT_COST_PER_ACTION = 5  # Quick Prompt or Import - same cost either way. Credits do not auto-refill.
 
 # Provider restriction per plan. A plan not listed here has no
 # restriction at all (existing behavior, unchanged) - call_llm falls
 # back to its normal LLM_PROVIDER env-based order. Only listed plans
 # get their provider order filtered.
-PLAN_PROVIDERS = {"more_context": ["anthropic", "openai"]}
+PLAN_PROVIDERS = {"free": ["gemini"], "more_context": ["anthropic", "openai"]}
 
 
 class LicenseError(Exception):
@@ -185,6 +185,23 @@ def create_license_after_payment(
     db.refresh(license)
 
     return _serialize(license)
+
+
+def get_or_create_free_license_for_user(db: Session, user_id: int) -> Dict[str, Any]:
+    """Lazily provisions a signed-in user's Start Free license the first
+    time their access is resolved and they don't already have one -
+    called from access_control.py so a signed-in user's plan is never
+    None. Never downgrades an existing paid plan; only creates when no
+    active license exists at all for this user_id."""
+    license = (
+        db.query(License)
+        .filter(License.user_id == user_id, License.status == "active")
+        .order_by(License.created_at.desc())
+        .first()
+    )
+    if license:
+        return _serialize(license)
+    return create_license_after_payment(db, user_id, "free")
 
 
 def mask_license_key(key: str) -> str:
