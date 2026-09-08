@@ -955,11 +955,13 @@ def _require_user(authorization: str) -> int:
         raise ValueError(e.message)
 
 
-def _require_aios_access(user_id: int) -> None:
+def _require_aios_access(user_id: int) -> tuple[str, int]:
     """Raises ValueError (caught the same way as _require_user's errors
     by every caller below) if the user's plan doesn't include AIOS.
     Lazily provisions a Start Free license first if the user has none
-    yet, mirroring what require_access does for the metered routes."""
+    yet, mirroring what require_access does for the metered routes.
+    Returns (plan, license_id) so callers that need to meter AIOS usage
+    (e.g. pro_account) don't have to look the license up again."""
     from services.db import get_db_session
     from services import license_service
 
@@ -973,14 +975,18 @@ def _require_aios_access(user_id: int) -> None:
         )
         if license:
             plan = license.plan
+            license_id = license.id
         else:
             created = license_service.get_or_create_free_license_for_user(db, user_id)
             plan = created["plan"]
+            license_id = created["license_id"]
     finally:
         db.close()
 
     if plan == "free":
         raise ValueError("AIOS isn't available on your plan. Upgrade to unlock it.")
+
+    return plan, license_id
 
 
 class TellAiosRequest(BaseModel):
@@ -996,9 +1002,41 @@ def aios_tell(payload: TellAiosRequest, authorization: str = AiosHeader(default=
     db = None
     try:
         user_id = _require_user(authorization)
-        _require_aios_access(user_id)
+        plan, license_id = _require_aios_access(user_id)
+        from services import license_service
+
+        is_aios_metered = plan in license_service.PLAN_AIOS_DAILY_LIMIT
+        reserved = False
+        if is_aios_metered:
+            credit_db = get_db_session()
+            try:
+                license_service.check_and_reserve_aios_action(credit_db, license_id)
+                reserved = True
+            except license_service.LicenseError as e:
+                return {"success": False, "error": e.message}
+            finally:
+                credit_db.close()
+
+        allowed_providers = license_service.PLAN_PROVIDERS.get(plan)
         db = get_db_session()
-        result = aios_service.tell_aios(db, user_id, payload.content)
+        try:
+            result = aios_service.tell_aios(db, user_id, payload.content, allowed_providers=allowed_providers)
+        except Exception:
+            if is_aios_metered and reserved:
+                release_db = get_db_session()
+                try:
+                    license_service.release_credits(release_db, license_id)
+                finally:
+                    release_db.close()
+            raise
+
+        if is_aios_metered and reserved:
+            commit_db = get_db_session()
+            try:
+                license_service.commit_credits(commit_db, license_id)
+            finally:
+                commit_db.close()
+
         return {"success": True, **result}
     except ValueError as e:
         return {"success": False, "error": str(e)}
@@ -1017,7 +1055,7 @@ def aios_overview(authorization: str = AiosHeader(default="")):
     db = None
     try:
         user_id = _require_user(authorization)
-        _require_aios_access(user_id)
+        _require_aios_access(user_id)  # plan/license_id unused here - no metering on read/write-only AIOS routes
         db = get_db_session()
         result = aios_service.get_overview(db, user_id)
         return {"success": True, **result}
@@ -1036,7 +1074,7 @@ def aios_memories(category: str | None = None, authorization: str = AiosHeader(d
     db = None
     try:
         user_id = _require_user(authorization)
-        _require_aios_access(user_id)
+        _require_aios_access(user_id)  # plan/license_id unused here - no metering on read/write-only AIOS routes
         db = get_db_session()
         results = aios_service.get_memories(db, user_id, category)
         return {"success": True, "memories": results}
@@ -1055,7 +1093,7 @@ def aios_update_memory(memory_id: int, payload: UpdateMemoryRequest, authorizati
     db = None
     try:
         user_id = _require_user(authorization)
-        _require_aios_access(user_id)
+        _require_aios_access(user_id)  # plan/license_id unused here - no metering on read/write-only AIOS routes
         db = get_db_session()
         result = aios_service.update_memory(db, user_id, memory_id, payload.content)
         return {"success": True, **result}
@@ -1076,7 +1114,7 @@ def aios_delete_memory(memory_id: int, authorization: str = AiosHeader(default="
     db = None
     try:
         user_id = _require_user(authorization)
-        _require_aios_access(user_id)
+        _require_aios_access(user_id)  # plan/license_id unused here - no metering on read/write-only AIOS routes
         db = get_db_session()
         aios_service.delete_memory(db, user_id, memory_id)
         return {"success": True}
@@ -1101,9 +1139,40 @@ def aios_quick_prompt(payload: AiosQuickPromptRequest, authorization: str = Aios
     db = None
     try:
         user_id = _require_user(authorization)
-        _require_aios_access(user_id)
+        plan, license_id = _require_aios_access(user_id)
+        from services import license_service
+
+        is_aios_metered = plan in license_service.PLAN_AIOS_DAILY_LIMIT
+        reserved = False
+        if is_aios_metered:
+            credit_db = get_db_session()
+            try:
+                license_service.check_and_reserve_aios_action(credit_db, license_id)
+                reserved = True
+            except license_service.LicenseError as e:
+                return {"success": False, "error": e.message}
+            finally:
+                credit_db.close()
+
+        allowed_providers = license_service.PLAN_PROVIDERS.get(plan)
         db = get_db_session()
-        result = aios_service.generate_aios_quick_prompt(db, user_id, payload.message)
+        try:
+            result = aios_service.generate_aios_quick_prompt(db, user_id, payload.message, allowed_providers=allowed_providers)
+        except Exception:
+            if is_aios_metered and reserved:
+                release_db = get_db_session()
+                try:
+                    license_service.release_credits(release_db, license_id)
+                finally:
+                    release_db.close()
+            raise
+
+        if is_aios_metered and reserved:
+            commit_db = get_db_session()
+            try:
+                license_service.commit_credits(commit_db, license_id)
+            finally:
+                commit_db.close()
 
         if result.get("prompt"):
             try:

@@ -53,6 +53,8 @@ class License(Base):
     installation_id = Column(String, index=True, nullable=True)  # anonymous creation only
     ip_hash = Column(String, nullable=True)  # anonymous creation only
     credits_remaining = Column(Integer, nullable=True)  # only set for metered plans (pro) - see PLAN_CREDIT_LIMITS
+    aios_actions_today = Column(Integer, nullable=True, default=0)  # only used by plans with an AIOS daily cap (e.g. pro_account)
+    last_aios_reset_date = Column(DateTime(timezone=True), nullable=True)
 
 
 class LicenseRecoveryCode(Base):

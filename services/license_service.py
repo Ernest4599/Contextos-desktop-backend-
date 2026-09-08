@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from services.models import License
 
-VALID_PLANS = ["free", "pro", "more_context", "team"]
+VALID_PLANS = ["free", "pro", "pro_account", "more_context", "team"]
 
 # Fixed, branded product-code prefix - not a secret, always the same for
 # every license. Only the trailing digits are randomly generated per key.
@@ -35,14 +35,22 @@ MAX_ANONYMOUS_LICENSES_PER_IP_PER_DAY = 3
 # (e.g. "free", "team" until added here) has no credit gate at all -
 # either fully blocked (free, via the existing plan == "free" check) or
 # fully unlimited once licensed (team, today).
-PLAN_CREDIT_LIMITS = {"free": 60, "pro": 300, "more_context": 600}
-CREDIT_COST_PER_ACTION = 5  # Quick Prompt or Import - same cost either way. Credits do not auto-refill.
+PLAN_CREDIT_LIMITS = {"free": 60, "pro": 300, "pro_account": 400, "more_context": 600}
+CREDIT_COST_PER_ACTION = 5  # Quick Prompt, Import, or AIOS - same cost either way. Credits do not auto-refill.
 
 # Provider restriction per plan. A plan not listed here has no
 # restriction at all (existing behavior, unchanged) - call_llm falls
 # back to its normal LLM_PROVIDER env-based order. Only listed plans
-# get their provider order filtered.
+# get their provider order filtered. pro_account is intentionally
+# absent here - it allows all configured providers.
 PLAN_PROVIDERS = {"free": ["gemini"], "more_context": ["anthropic", "openai"]}
+
+# Plans with a daily AIOS action cap, separate from and in addition to
+# their credit pool - an AIOS action costs credits AND counts against
+# this daily count. A plan not listed here has no AIOS-specific daily
+# cap (though AIOS may still be blocked entirely for that plan - see
+# _require_aios_access in main.py).
+PLAN_AIOS_DAILY_LIMIT = {"pro_account": 30}
 
 
 class LicenseError(Exception):
@@ -185,6 +193,52 @@ def create_license_after_payment(
     db.refresh(license)
 
     return _serialize(license)
+
+
+def _maybe_reset_aios_daily_count(lic: License) -> None:
+    """Resets the AIOS daily counter if we've crossed into a new UTC day
+    since last_aios_reset_date. Caller must hold the row lock already."""
+    from datetime import datetime, timezone as _tz
+    now = datetime.now(_tz.utc)
+    if lic.last_aios_reset_date is None or lic.last_aios_reset_date.date() != now.date():
+        lic.aios_actions_today = 0
+        lic.last_aios_reset_date = now
+
+
+def check_and_reserve_aios_action(db: Session, license_id: int, cost: int = CREDIT_COST_PER_ACTION) -> Dict[str, Any]:
+    """Call before an AIOS action (Tell AIOS or AIOS Quick Prompt) on a
+    plan with a daily AIOS cap. Raises LicenseError if blocked, otherwise
+    atomically reserves the credits AND increments the daily AIOS count.
+    Caller must follow with commit_credits() on success or
+    release_credits() on failure - the daily count is NOT released on
+    failure, mirroring free_license_service's failed-attempt handling
+    (a failed attempt still counts, only the credit is refunded)."""
+    lic = _lock_license_by_id(db, license_id)
+
+    if lic.status != "active":
+        db.rollback()
+        raise LicenseError("This license is not active.")
+
+    _maybe_reset_aios_daily_count(lic)
+
+    daily_limit = PLAN_AIOS_DAILY_LIMIT.get(lic.plan)
+    if daily_limit is not None and (lic.aios_actions_today or 0) >= daily_limit:
+        db.rollback()
+        raise LicenseError("You've reached your daily AIOS usage limit.")
+
+    if lic.credits_remaining is None:
+        db.rollback()
+        raise LicenseError("This plan doesn't include metered usage.")
+
+    if lic.credits_remaining < cost:
+        db.rollback()
+        raise LicenseError("You've reached your usage limit.")
+
+    lic.credits_remaining -= cost
+    lic.aios_actions_today = (lic.aios_actions_today or 0) + 1
+    db.commit()
+    db.refresh(lic)
+    return _serialize(lic)
 
 
 def get_or_create_free_license_for_user(db: Session, user_id: int) -> Dict[str, Any]:

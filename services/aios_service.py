@@ -87,7 +87,7 @@ def _format_existing_memories(memories: List[AiosMemory]) -> str:
     return "\n".join(lines)
 
 
-def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
+def tell_aios(db: Session, user_id: int, raw_input: str, allowed_providers: list[str] | None = None) -> Dict[str, Any]:
     raw_input = (raw_input or "").strip()
     if not raw_input:
         raise AiosError("Tell AIOS something first")
@@ -107,7 +107,7 @@ def tell_aios(db: Session, user_id: int, raw_input: str) -> Dict[str, Any]:
         f"EXISTING MEMORIES:\n{_format_existing_memories(existing)}"
     )
 
-    raw = call_llm(CLASSIFY_SYSTEM_PROMPT, user_content)
+    raw = call_llm(CLASSIFY_SYSTEM_PROMPT, user_content, allowed_providers=allowed_providers)
     parsed = parse_llm_json(raw)
     items = parsed.get("items", [])
     if not isinstance(items, list):
@@ -305,7 +305,7 @@ def get_relevant_memories(db: Session, user_id: int, request_text: str, max_item
     return [by_id[i] for i in relevant_ids if i in by_id][:max_items]
 
 
-def generate_aios_quick_prompt(db: Session, user_id: int, request_text: str) -> Dict[str, Any]:
+def generate_aios_quick_prompt(db: Session, user_id: int, request_text: str, allowed_providers: list[str] | None = None) -> Dict[str, Any]:
     """
     AIOS Quick Prompt pipeline: understand request -> retrieve relevant
     identity -> build context -> generate prompt -> validate -> return.
@@ -327,7 +327,7 @@ def generate_aios_quick_prompt(db: Session, user_id: int, request_text: str) -> 
 
     user_content = f"USER REQUEST:\n{request_text}\n\nUSER IDENTITY:\n{identity_block}"
 
-    raw = call_llm(AIOS_QUICK_PROMPT_SYSTEM_PROMPT, user_content)
+    raw = call_llm(AIOS_QUICK_PROMPT_SYSTEM_PROMPT, user_content, allowed_providers=allowed_providers)
     parsed = parse_llm_json(raw)
 
     prompt = parsed.get("prompt", "")
