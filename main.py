@@ -655,7 +655,7 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
                 db.close()
 
     messages = split_messages(validated)
-    allowed_providers = license_service.PLAN_PROVIDERS.get(access.plan)
+    allowed_providers = ["gemini"] if access.via == "free" else license_service.PLAN_PROVIDERS.get(access.plan)
     return StreamingResponse(
         _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers),
         media_type="text/event-stream",
@@ -697,7 +697,7 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
             finally:
                 db.close()
 
-    allowed_providers = license_service.PLAN_PROVIDERS.get(access.plan)
+    allowed_providers = ["gemini"] if access.via == "free" else license_service.PLAN_PROVIDERS.get(access.plan)
     return StreamingResponse(
         _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers),
         media_type="text/event-stream",
@@ -769,7 +769,7 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
             finally:
                 credit_db.close()
 
-        allowed_providers = license_service.PLAN_PROVIDERS.get(access.plan)
+        allowed_providers = ["gemini"] if access.via == "free" else license_service.PLAN_PROVIDERS.get(access.plan)
         result = generate_quick_prompt(payload.overview, payload.decisions, payload.task, allowed_providers=allowed_providers)
 
         if is_metered:
