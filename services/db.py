@@ -48,3 +48,4 @@ def _run_migrations() -> None:
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS credits_remaining INTEGER"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS aios_actions_today INTEGER DEFAULT 0"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS last_aios_reset_date TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS aios_credits_remaining INTEGER"))

@@ -55,6 +55,7 @@ class License(Base):
     credits_remaining = Column(Integer, nullable=True)  # only set for metered plans (pro) - see PLAN_CREDIT_LIMITS
     aios_actions_today = Column(Integer, nullable=True, default=0)  # only used by plans with an AIOS daily cap (e.g. pro_account)
     last_aios_reset_date = Column(DateTime(timezone=True), nullable=True)
+    aios_credits_remaining = Column(Integer, nullable=True)  # only set for plans with a SEPARATE AIOS pool - see PLAN_AIOS_CREDIT_LIMITS. Plans without one (e.g. pro_account) draw AIOS cost from credits_remaining instead.
 
 
 class LicenseRecoveryCode(Base):

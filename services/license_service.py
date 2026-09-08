@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from services.models import License
 
-VALID_PLANS = ["free", "pro", "pro_account", "more_context", "team"]
+VALID_PLANS = ["free", "pro", "pro_account", "more_context", "more_context_account", "team"]
 
 # Fixed, branded product-code prefix - not a secret, always the same for
 # every license. Only the trailing digits are randomly generated per key.
@@ -35,7 +35,7 @@ MAX_ANONYMOUS_LICENSES_PER_IP_PER_DAY = 3
 # (e.g. "free", "team" until added here) has no credit gate at all -
 # either fully blocked (free, via the existing plan == "free" check) or
 # fully unlimited once licensed (team, today).
-PLAN_CREDIT_LIMITS = {"free": 60, "pro": 300, "pro_account": 400, "more_context": 600}
+PLAN_CREDIT_LIMITS = {"free": 60, "pro": 300, "pro_account": 400, "more_context": 600, "more_context_account": 1000}
 CREDIT_COST_PER_ACTION = 5  # Quick Prompt, Import, or AIOS - same cost either way. Credits do not auto-refill.
 
 # Provider restriction per plan. A plan not listed here has no
@@ -43,14 +43,23 @@ CREDIT_COST_PER_ACTION = 5  # Quick Prompt, Import, or AIOS - same cost either w
 # back to its normal LLM_PROVIDER env-based order. Only listed plans
 # get their provider order filtered. pro_account is intentionally
 # absent here - it allows all configured providers.
-PLAN_PROVIDERS = {"free": ["gemini"], "more_context": ["anthropic", "openai"]}
+PLAN_PROVIDERS = {"free": ["gemini"], "more_context": ["anthropic", "openai"], "more_context_account": ["anthropic", "openai"]}
 
 # Plans with a daily AIOS action cap, separate from and in addition to
 # their credit pool - an AIOS action costs credits AND counts against
 # this daily count. A plan not listed here has no AIOS-specific daily
 # cap (though AIOS may still be blocked entirely for that plan - see
-# _require_aios_access in main.py).
-PLAN_AIOS_DAILY_LIMIT = {"pro_account": 30}
+# _require_aios_access in main.py). Configurable per plan, not a fixed
+# global value.
+PLAN_AIOS_DAILY_LIMIT = {"pro_account": 30, "more_context_account": 60}
+
+# Plans with a SEPARATE AIOS credit pool, independent of their general
+# PLAN_CREDIT_LIMITS pool - so heavy AIOS usage can never eat into
+# Import/Quick Prompt budget on these plans. A plan with an AIOS daily
+# cap (PLAN_AIOS_DAILY_LIMIT above) but NO entry here still costs
+# credits on AIOS actions - just drawn from the single general pool
+# instead (e.g. pro_account).
+PLAN_AIOS_CREDIT_LIMITS = {"more_context_account": 500}
 
 
 class LicenseError(Exception):
@@ -187,6 +196,7 @@ def create_license_after_payment(
         installation_id=installation_id if user_id is None else None,
         ip_hash=ip_hash if user_id is None else None,
         credits_remaining=PLAN_CREDIT_LIMITS.get(plan),
+        aios_credits_remaining=PLAN_AIOS_CREDIT_LIMITS.get(plan),
     )
     db.add(license)
     db.commit()
@@ -210,9 +220,14 @@ def check_and_reserve_aios_action(db: Session, license_id: int, cost: int = CRED
     plan with a daily AIOS cap. Raises LicenseError if blocked, otherwise
     atomically reserves the credits AND increments the daily AIOS count.
     Caller must follow with commit_credits() on success or
-    release_credits() on failure - the daily count is NOT released on
-    failure, mirroring free_license_service's failed-attempt handling
-    (a failed attempt still counts, only the credit is refunded)."""
+    release_aios_credits() on failure - the daily count is NOT released
+    on failure, mirroring free_license_service's failed-attempt handling
+    (a failed attempt still counts, only the credit is refunded).
+
+    Draws from the plan's dedicated AIOS pool (aios_credits_remaining)
+    if it has one per PLAN_AIOS_CREDIT_LIMITS, otherwise falls back to
+    the shared general pool (credits_remaining) - e.g. pro_account has
+    a daily cap but no separate pool, more_context_account has both."""
     lic = _lock_license_by_id(db, license_id)
 
     if lic.status != "active":
@@ -226,16 +241,38 @@ def check_and_reserve_aios_action(db: Session, license_id: int, cost: int = CRED
         db.rollback()
         raise LicenseError("You've reached your daily AIOS usage limit.")
 
-    if lic.credits_remaining is None:
+    has_dedicated_pool = lic.plan in PLAN_AIOS_CREDIT_LIMITS
+    balance = lic.aios_credits_remaining if has_dedicated_pool else lic.credits_remaining
+
+    if balance is None:
         db.rollback()
         raise LicenseError("This plan doesn't include metered usage.")
 
-    if lic.credits_remaining < cost:
+    if balance < cost:
         db.rollback()
         raise LicenseError("You've reached your usage limit.")
 
-    lic.credits_remaining -= cost
+    if has_dedicated_pool:
+        lic.aios_credits_remaining -= cost
+    else:
+        lic.credits_remaining -= cost
     lic.aios_actions_today = (lic.aios_actions_today or 0) + 1
+    db.commit()
+    db.refresh(lic)
+    return _serialize(lic)
+
+
+def release_aios_credits(db: Session, license_id: int, cost: int = CREDIT_COST_PER_ACTION) -> Dict[str, Any]:
+    """Call on AIOS action failure. Refunds into whichever pool the
+    reservation was drawn from - the plan's dedicated AIOS pool if it
+    has one, otherwise the shared general pool. Never use release_credits()
+    for an AIOS failure, or a more_context_account refund would land in
+    the wrong pool."""
+    lic = _lock_license_by_id(db, license_id)
+    if lic.plan in PLAN_AIOS_CREDIT_LIMITS:
+        lic.aios_credits_remaining = (lic.aios_credits_remaining or 0) + cost
+    else:
+        lic.credits_remaining = (lic.credits_remaining or 0) + cost
     db.commit()
     db.refresh(lic)
     return _serialize(lic)

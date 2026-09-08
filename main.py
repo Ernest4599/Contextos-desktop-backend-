@@ -1025,7 +1025,7 @@ def aios_tell(payload: TellAiosRequest, authorization: str = AiosHeader(default=
             if is_aios_metered and reserved:
                 release_db = get_db_session()
                 try:
-                    license_service.release_credits(release_db, license_id)
+                    license_service.release_aios_credits(release_db, license_id)
                 finally:
                     release_db.close()
             raise
@@ -1162,7 +1162,7 @@ def aios_quick_prompt(payload: AiosQuickPromptRequest, authorization: str = Aios
             if is_aios_metered and reserved:
                 release_db = get_db_session()
                 try:
-                    license_service.release_credits(release_db, license_id)
+                    license_service.release_aios_credits(release_db, license_id)
                 finally:
                     release_db.close()
             raise
