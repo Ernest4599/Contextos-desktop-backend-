@@ -4,10 +4,11 @@ AIOS memory engine: Input -> Understand -> Extract -> Classify -> Store -> Retri
 Deliberately simple per the MVP spec: one LLM call extracts discrete
 memory items from free text, classifies each into a fixed category set,
 and decides against the user's existing memories whether each item is
-new, a duplicate (touch existing), or a conflicting update (mark old
-outdated, store new as current). No separate embedding/similarity
-system - the LLM does this classification directly, same pattern as
-context_extractor.py and quick_prompt.py.
+new, a duplicate (touch existing), a clean update (old state ->
+historical, new state -> active), or a genuine conflict (held as
+needs_review rather than merged - see CLASSIFY_SYSTEM_PROMPT). No
+separate embedding/similarity system - the LLM does this classification
+directly, same pattern as context_extractor.py and quick_prompt.py.
 
 Every UI surface (Overview summary, Identity Strength, Recent Memories,
 category pages, AIOS Quick Prompt) reads from this same engine - no
@@ -20,6 +21,7 @@ after fetching, including content fed back into LLM prompts.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
@@ -35,9 +37,12 @@ ALLOWED_CATEGORIES = [
     "personality", "preference", "goal", "interest",
     "knowledge", "writing_style", "important_fact", "context",
 ]
+ALLOWED_CONFIDENCE = {"high", "medium", "low"}
+ALLOWED_TEMPORAL_STATES = {"permanent", "current", "temporary", "historical", "unknown"}
 
 MAX_EXISTING_MEMORIES_IN_PROMPT = 60
 MAX_QUICK_PROMPT_LENGTH = 2000
+MAX_TELL_INPUT_LENGTH = 4000
 
 # Categories checked for the Identity Strength completeness score.
 IDENTITY_STRENGTH_CATEGORIES = [
@@ -49,15 +54,27 @@ CLASSIFY_SYSTEM_PROMPT = """You are AIOS, an identity layer that learns what mat
 
 Given new input from the user and a list of their existing stored memories, do the following:
 
-1. Extract each discrete, useful piece of information from the input as a separate item. A single message can contain multiple items (e.g. a preference AND a goal). Discard filler that carries no lasting information about the user (greetings, small talk).
+1. Extract each discrete, useful piece of information from the input as a separate item. A single message can contain multiple items (e.g. a preference AND a goal). Discard filler that carries no lasting information about the user (greetings, small talk). Do not turn a passing mention into a fact about the user - only extract things that are actually about them.
 2. For each item, classify it into exactly one category from this fixed list: personality, preference, goal, interest, knowledge, writing_style, important_fact, context.
 3. For each item, decide an action by comparing it to the existing memories provided:
    - "new" - genuinely new information, no matching existing memory
    - "duplicate" - restates an existing memory with the same meaning (include the matching existing memory's id)
-   - "update" - conflicts with or supersedes an existing memory in the same category (e.g. old: "prefers detailed explanations", new: "prefers concise explanations") - include the existing memory's id to mark outdated
+   - "update" - clearly supersedes an existing memory because the user's situation changed over time (e.g. old: "works alone on ContextOS", new: "hired two developers") - include the existing memory's id
+   - "conflict" - contradicts an existing memory but it's genuinely unclear whether this is a correction, a change over time, or a mistake - include the existing memory's id; do NOT guess, flag it instead
+4. For each item, set "confidence":
+   - "high" - the user explicitly stated this
+   - "medium" - a reasonable interpretation of what they said, not stated word-for-word
+   - "low" - your own inference that goes beyond what they actually said
+   Never silently upgrade a low-confidence inference into a high-confidence fact.
+5. For each item, set "temporal_state":
+   - "permanent" - an enduring identity fact (e.g. occupation, name)
+   - "current" - true right now but expected to change (e.g. currently building X)
+   - "temporary" - explicitly short-term (e.g. this week, this month)
+   - "historical" - about the past, no longer current
+   - "unknown" - can't tell from what was said
 
 Respond with ONLY a JSON object of this exact shape:
-{"items": [{"content": "...", "category": "...", "action": "new"}, {"content": "...", "category": "...", "action": "update", "existing_id": 12}, {"content": "...", "category": "...", "action": "duplicate", "existing_id": 7}]}
+{"items": [{"content": "...", "category": "...", "action": "new", "confidence": "high", "temporal_state": "permanent"}, {"content": "...", "category": "...", "action": "update", "existing_id": 12, "confidence": "high", "temporal_state": "current"}]}
 
 If nothing useful is present, return {"items": []}. No preamble, no markdown fences."""
 
@@ -91,6 +108,8 @@ def tell_aios(db: Session, user_id: int, raw_input: str, allowed_providers: list
     raw_input = (raw_input or "").strip()
     if not raw_input:
         raise AiosError("Tell AIOS something first")
+    if len(raw_input) > MAX_TELL_INPUT_LENGTH:
+        raise AiosError(f"That's too long — please keep it under {MAX_TELL_INPUT_LENGTH} characters")
 
     batch_id = str(uuid.uuid4())
 
@@ -116,12 +135,16 @@ def tell_aios(db: Session, user_id: int, raw_input: str, allowed_providers: list
     existing_by_id = {m.id: m for m in existing}
     added: List[Dict[str, Any]] = []
     updated: List[Dict[str, Any]] = []
+    conflicts: List[Dict[str, Any]] = []
     skipped_duplicates = 0
+    now = datetime.now(timezone.utc)
 
     for item in items:
         content = (item.get("content") or "").strip()
         category = item.get("category")
         action = item.get("action", "new")
+        confidence = item.get("confidence") if item.get("confidence") in ALLOWED_CONFIDENCE else "medium"
+        temporal_state = item.get("temporal_state") if item.get("temporal_state") in ALLOWED_TEMPORAL_STATES else "unknown"
 
         if not content or category not in ALLOWED_CATEGORIES:
             continue
@@ -130,7 +153,8 @@ def tell_aios(db: Session, user_id: int, raw_input: str, allowed_providers: list
             existing_id = item.get("existing_id")
             match = existing_by_id.get(existing_id)
             if match:
-                match.updated_at = None  # let onupdate trigger a fresh timestamp
+                match.last_confirmed_at = now
+                match.updated_at = now
                 match.batch_id = batch_id
                 db.add(match)
             skipped_duplicates += 1
@@ -141,21 +165,37 @@ def tell_aios(db: Session, user_id: int, raw_input: str, allowed_providers: list
             match = existing_by_id.get(existing_id)
             if match:
                 match.status = "outdated"
+                match.temporal_state = "historical"
                 db.add(match)
             new_memory = AiosMemory(
                 user_id=user_id, content=encrypt_text(content), category=category,
-                source="user_input", confidence="high", status="active",
-                batch_id=batch_id,
+                source="user_input", confidence=confidence, temporal_state=temporal_state,
+                status="active", batch_id=batch_id,
             )
             db.add(new_memory)
             updated.append({"content": content, "category": category})
             continue
 
+        if action == "conflict":
+            existing_id = item.get("existing_id")
+            match = existing_by_id.get(existing_id)
+            if match:
+                match.status = "needs_review"
+                db.add(match)
+            new_memory = AiosMemory(
+                user_id=user_id, content=encrypt_text(content), category=category,
+                source="user_input", confidence=confidence, temporal_state=temporal_state,
+                status="needs_review", batch_id=batch_id,
+            )
+            db.add(new_memory)
+            conflicts.append({"content": content, "category": category, "conflicts_with_id": existing_id})
+            continue
+
         # action == "new" (or unrecognized -> treat as new)
         new_memory = AiosMemory(
             user_id=user_id, content=encrypt_text(content), category=category,
-            source="user_input", confidence="high", status="active",
-            batch_id=batch_id,
+            source="user_input", confidence=confidence, temporal_state=temporal_state,
+            status="active", batch_id=batch_id,
         )
         db.add(new_memory)
         added.append({"content": content, "category": category})
@@ -165,6 +205,7 @@ def tell_aios(db: Session, user_id: int, raw_input: str, allowed_providers: list
     return {
         "added": added,
         "updated": updated,
+        "conflicts": conflicts,
         "duplicates_skipped": skipped_duplicates,
     }
 
@@ -233,7 +274,28 @@ def get_memories(db: Session, user_id: int, category: str | None = None) -> List
         {
             "id": m.id, "content": decrypt_text(m.content), "category": m.category,
             "confidence": m.confidence,
+            "temporal_state": m.temporal_state,
             "created_at": m.created_at.isoformat() if m.created_at else None,
+            "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+        }
+        for m in results
+    ]
+
+
+def get_conflicts(db: Session, user_id: int) -> List[Dict[str, Any]]:
+    """Items AIOS held back rather than silently merging - see the
+    "conflict" action in CLASSIFY_SYSTEM_PROMPT. No route/UI wired to
+    this yet; add one when you're ready to let the user resolve these."""
+    results = (
+        db.query(AiosMemory)
+        .filter(AiosMemory.user_id == user_id, AiosMemory.status == "needs_review")
+        .order_by(desc(AiosMemory.updated_at))
+        .all()
+    )
+    return [
+        {
+            "id": m.id, "content": decrypt_text(m.content), "category": m.category,
+            "confidence": m.confidence, "temporal_state": m.temporal_state,
             "updated_at": m.updated_at.isoformat() if m.updated_at else None,
         }
         for m in results

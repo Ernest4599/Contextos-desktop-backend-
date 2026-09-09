@@ -1,7 +1,7 @@
 from sqlalchemy.sql import func
 from fastapi import FastAPI, UploadFile, File, Cookie, Response, Depends, Request, Form
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from curl_cffi import requests as crequests
 
 from services.share_link_service import import_from_share_link, ShareLinkError
@@ -1059,7 +1059,7 @@ def _require_aios_access(user_id: int) -> tuple[str, int]:
 
 
 class TellAiosRequest(BaseModel):
-    content: str
+    content: str = Field(max_length=4000)
 
 
 class UpdateMemoryRequest(BaseModel):

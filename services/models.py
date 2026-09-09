@@ -23,9 +23,11 @@ class AiosMemory(Base):
     content = Column(String, nullable=False)
     category = Column(String, index=True, nullable=False)
     source = Column(String, default="user_input")
-    confidence = Column(String, default="high")
-    status = Column(String, default="active")  # active | outdated
+    confidence = Column(String, default="medium")  # high | medium | low - set by the classify LLM call, see aios_service.py
+    temporal_state = Column(String, default="unknown")  # permanent | current | temporary | historical | unknown
+    status = Column(String, default="active")  # active | outdated | needs_review
     batch_id = Column(String, index=True, nullable=True)  # groups memories created/touched by one /aios/tell call
+    last_confirmed_at = Column(DateTime(timezone=True), server_default=func.now())  # bumped when the user restates/reconfirms this fact
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -45,17 +47,17 @@ class License(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     license_key = Column(String, unique=True, index=True, nullable=False)
-    user_id = Column(Integer, index=True, nullable=True)  # null until linked to an account
+    user_id = Column(Integer, index=True, nullable=True)
     plan = Column(String, nullable=False)
-    status = Column(String, default="pending")  # pending | active | expired | revoked
+    status = Column(String, default="pending")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=True)
-    installation_id = Column(String, index=True, nullable=True)  # anonymous creation only
-    ip_hash = Column(String, nullable=True)  # anonymous creation only
-    credits_remaining = Column(Integer, nullable=True)  # only set for metered plans (pro) - see PLAN_CREDIT_LIMITS
-    aios_actions_today = Column(Integer, nullable=True, default=0)  # only used by plans with an AIOS daily cap (e.g. pro_account)
+    installation_id = Column(String, index=True, nullable=True)
+    ip_hash = Column(String, nullable=True)
+    credits_remaining = Column(Integer, nullable=True)
+    aios_actions_today = Column(Integer, nullable=True, default=0)
     last_aios_reset_date = Column(DateTime(timezone=True), nullable=True)
-    aios_credits_remaining = Column(Integer, nullable=True)  # only set for plans with a SEPARATE AIOS pool - see PLAN_AIOS_CREDIT_LIMITS. Plans without one (e.g. pro_account) draw AIOS cost from credits_remaining instead.
+    aios_credits_remaining = Column(Integer, nullable=True)
 
 
 class LicenseRecoveryCode(Base):
@@ -64,7 +66,7 @@ class LicenseRecoveryCode(Base):
     id = Column(Integer, primary_key=True, index=True)
     license_id = Column(Integer, index=True, nullable=False)
     code_hash = Column(String, nullable=False)
-    status = Column(String, default="unused")  # unused | used
+    status = Column(String, default="unused")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     used_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -73,9 +75,9 @@ class LicenseRecoveryEvent(Base):
     __tablename__ = "license_recovery_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    license_id = Column(Integer, index=True, nullable=True)  # null if no matching license found
-    event_type = Column(String, nullable=False)  # RECOVERY_ATTEMPT | RECOVERY_SUCCESS | RECOVERY_FAILURE | RECOVERY_LOCKED | CODE_USED | CODE_ROTATED
-    success = Column(String, nullable=False)  # "true" | "false"
+    license_id = Column(Integer, index=True, nullable=True)
+    event_type = Column(String, nullable=False)
+    success = Column(String, nullable=False)
     ip_hash = Column(String, nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -84,7 +86,7 @@ class AiosPreferences(Base):
     __tablename__ = "aios_preferences"
 
     user_id = Column(Integer, primary_key=True)
-    personalization_level = Column(String, default="balanced")  # minimal | balanced | maximum
+    personalization_level = Column(String, default="balanced")
     enabled_categories = Column(String, default="personality,preference,goal,interest,knowledge,writing_style,important_fact,context")
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -103,11 +105,11 @@ class ContextPackage(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, index=True, nullable=False)
-    source = Column(String, nullable=False)  # import | quick_prompt | aios_quick_prompt
+    source = Column(String, nullable=False)
     title = Column(String, nullable=False)
     preview = Column(String, nullable=False)
     content = Column(String, nullable=False)
-    project_id = Column(Integer, index=True, nullable=True)  # optional - which Project this package belongs to, if any
+    project_id = Column(Integer, index=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -115,11 +117,11 @@ class SecurityEvent(Base):
     __tablename__ = "security_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    event_type = Column(String, nullable=False)  # LOGIN_SUCCESS | LOGIN_FAILURE | RATE_LIMIT_EXCEEDED
-    user_id = Column(Integer, index=True, nullable=True)  # null when the actor isn't known
+    event_type = Column(String, nullable=False)
+    user_id = Column(Integer, index=True, nullable=True)
     success = Column(Boolean, nullable=False)
     ip_hash = Column(String, nullable=True)
-    detail = Column(String, nullable=True)  # optional context, e.g. the rate-limited route
+    detail = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -127,7 +129,7 @@ class LLMProviderEvent(Base):
     __tablename__ = "llm_provider_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    provider = Column(String, nullable=False)  # anthropic | openai | gemini
+    provider = Column(String, nullable=False)
     success = Column(Boolean, nullable=False)
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -139,10 +141,9 @@ class FreeTierLicense(Base):
     id = Column(Integer, primary_key=True, index=True)
     installation_id = Column(String, unique=True, index=True, nullable=False)
     ip_hash = Column(String, index=True, nullable=True)
-    status = Column(String, default="active")  # active | blocked
+    status = Column(String, default="active")
     credits_remaining = Column(Integer, nullable=False, default=50)
     imports_used_today = Column(Integer, nullable=False, default=0)
     failed_attempts_today = Column(Integer, nullable=False, default=0)
     last_reset_date = Column(DateTime(timezone=True), server_default=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
