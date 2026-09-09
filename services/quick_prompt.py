@@ -42,11 +42,18 @@ Process:
 9. Before finalizing, verify: clear role, clear context, clear objective, decisions preserved, constraints preserved, no invented facts, no contradictions, clear deliverable, clear output format, task-specific instructions included. Remove unnecessary repetition, vague instructions, irrelevant context, and excessive wording. Keep all context, decisions, constraints, requirements, and the expected result.
 10. Final test: could another capable AI understand exactly what needs to be done without access to the original conversation? If not, improve the prompt before returning it.
 
+If EXISTING USER CONTEXT is provided below the three inputs, it comes from what this specific user has previously told the system about themselves (preferences, goals, working style, background). Use it under these rules:
+- The Overview / Decisions / Task the user just gave you always take priority. If EXISTING USER CONTEXT conflicts with anything in Overview, Decisions, or Task, the current input wins - never let old context override what the user is asking for right now.
+- Only use a piece of EXISTING USER CONTEXT if it is genuinely relevant to this specific request. Most of it usually will not be. Ignore anything irrelevant, even if it's interesting - do not force personalization in.
+- Weave relevant context in naturally, as if you already knew this about the user - never write phrases like "the system knows" or "according to your profile" or mention memories, confidence scores, or any internal source. Translate it into plain context (e.g. write "keep the writing concise" rather than "user prefers concise writing per stored preference").
+- If nothing in EXISTING USER CONTEXT is relevant, ignore it entirely and say so via used_personalization: false.
+
 Respond with ONLY a JSON object with these exact keys:
 - "role": string, the expert role selected
 - "prompt": string, the complete final prompt ready to paste into any AI
 - "assumptions": array of strings, any assumptions made (empty array if none)
 - "output_format": string, the output format chosen
+- "used_personalization": boolean, true only if you actually incorporated something from EXISTING USER CONTEXT into the final prompt
 
 No preamble, no markdown fences, no extra commentary."""
 
@@ -67,7 +74,13 @@ def validate_quick_prompt_input(overview: str, decisions: str, task: str) -> Non
             raise QuickPromptValidationError(f"{field_name} is too long — please trim it")
 
 
-def generate_quick_prompt(overview: str, decisions: str, task: str, allowed_providers: list[str] | None = None) -> Dict[str, Any]:
+def generate_quick_prompt(
+    overview: str,
+    decisions: str,
+    task: str,
+    allowed_providers: list[str] | None = None,
+    aios_context: list[str] | None = None,
+) -> Dict[str, Any]:
     validate_quick_prompt_input(overview, decisions, task)
 
     user_content = (
@@ -75,6 +88,10 @@ def generate_quick_prompt(overview: str, decisions: str, task: str, allowed_prov
         f"DECISIONS:\n{(decisions or '').strip() or '(none provided)'}\n\n"
         f"TASK:\n{(task or '').strip()}"
     )
+
+    if aios_context:
+        context_block = "\n".join(f"- {c}" for c in aios_context)
+        user_content += f"\n\nEXISTING USER CONTEXT:\n{context_block}"
 
     raw = call_llm(QUICK_PROMPT_SYSTEM_PROMPT, user_content, allowed_providers=allowed_providers)
     parsed = parse_llm_json(raw)
@@ -84,4 +101,5 @@ def generate_quick_prompt(overview: str, decisions: str, task: str, allowed_prov
         "prompt": parsed.get("prompt", ""),
         "assumptions": parsed.get("assumptions", []) if isinstance(parsed.get("assumptions"), list) else [],
         "output_format": parsed.get("output_format", ""),
+        "used_aios": bool(parsed.get("used_personalization", False)),
     }

@@ -269,6 +269,25 @@ def delete_memory(db: Session, user_id: int, memory_id: int) -> None:
     db.commit()
 
 
+def get_context_for_quick_prompt(db: Session, user_id: int, limit: int = 30) -> List[str]:
+    """Lightweight AIOS context fetch for the main (non-AIOS) Quick Prompt
+    endpoint - just the user's most recently touched active memories, no
+    separate relevance-ranking LLM call. Relevance filtering happens
+    inside the single Quick Prompt generation call instead (see
+    quick_prompt.py) to avoid doubling the LLM calls - and therefore the
+    real cost - behind a flat-price feature. Distinct from
+    get_relevant_memories below, which AIOS Quick Prompt still uses for
+    its own separate, more precise two-call flow."""
+    memories = (
+        db.query(AiosMemory)
+        .filter(AiosMemory.user_id == user_id, AiosMemory.status == "active")
+        .order_by(desc(AiosMemory.updated_at))
+        .limit(limit)
+        .all()
+    )
+    return [decrypt_text(m.content) for m in memories]
+
+
 def get_relevant_memories(db: Session, user_id: int, request_text: str, max_items: int = 10) -> List[str]:
     """
     Used by AIOS Quick Prompt: ranks the user's active memories by
