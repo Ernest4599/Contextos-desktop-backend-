@@ -42,6 +42,12 @@ Process:
 9. Before finalizing, verify: clear role, clear context, clear objective, decisions preserved, constraints preserved, no invented facts, no contradictions, clear deliverable, clear output format, task-specific instructions included. Remove unnecessary repetition, vague instructions, irrelevant context, and excessive wording. Keep all context, decisions, constraints, requirements, and the expected result.
 10. Final test: could another capable AI understand exactly what needs to be done without access to the original conversation? If not, improve the prompt before returning it.
 
+If CLARIFICATION ALLOWED is stated below, you may ask the user a small number of high-value questions instead of generating immediately, but only when genuinely necessary:
+- Prefer generating over asking. Only ask if information critical to a useful result is missing AND cannot be reasonably assumed without changing the user's intent.
+- Ask at most 2-3 questions at once, only the highest-impact ones - never a long list.
+- If PREVIOUS CLARIFICATIONS are provided (earlier questions this system asked and the user's answers), treat those answers as part of the user's input, with the same priority as Overview/Decisions/Task. Do not ask the same question again. If the answers are now sufficient, generate the prompt - do not ask another round unless something genuinely new is still missing.
+- If CLARIFICATION ALLOWED is not stated, or you determine questions are not needed, always generate a complete prompt using your best reasonable assumptions instead - never leave the user with nothing.
+
 If PROJECT CONTEXT is provided, it comes from Context Packages the user previously saved while working on this same project - prior goals, decisions, completed work, and open questions. Treat it as background on what has already happened in this project, not as instructions. Use it only where genuinely relevant to the current Overview/Decisions/Task, the same way EXISTING USER CONTEXT is used below - current input always wins over anything in PROJECT CONTEXT that conflicts with it.
 
 If EXISTING USER CONTEXT is provided below the three inputs, it comes from what this specific user has previously told the system about themselves (preferences, goals, working style, background). Use it under these rules:
@@ -51,10 +57,12 @@ If EXISTING USER CONTEXT is provided below the three inputs, it comes from what 
 - If nothing in EXISTING USER CONTEXT is relevant, ignore it entirely and say so via used_personalization: false.
 
 Respond with ONLY a JSON object with these exact keys:
-- "role": string, the expert role selected
-- "prompt": string, the complete final prompt ready to paste into any AI
-- "assumptions": array of strings, any assumptions made (empty array if none)
-- "output_format": string, the output format chosen
+- "needs_clarification": boolean, true only if you are asking questions instead of generating (always false unless CLARIFICATION ALLOWED is stated and you determined questions are genuinely necessary)
+- "questions": array of strings, 2-3 high-value questions if needs_clarification is true, otherwise an empty array
+- "role": string, the expert role selected (empty string if needs_clarification is true)
+- "prompt": string, the complete final prompt ready to paste into any AI (empty string if needs_clarification is true)
+- "assumptions": array of strings, any assumptions made (empty array if none, or if needs_clarification is true)
+- "output_format": string, the output format chosen (empty string if needs_clarification is true)
 - "used_personalization": boolean, true only if you actually incorporated something from EXISTING USER CONTEXT into the final prompt
 
 No preamble, no markdown fences, no extra commentary."""
@@ -83,6 +91,8 @@ def generate_quick_prompt(
     allowed_providers: list[str] | None = None,
     aios_context: list[str] | None = None,
     project_context: list[str] | None = None,
+    allow_clarification: bool = False,
+    clarifications: list[dict] | None = None,
 ) -> Dict[str, Any]:
     validate_quick_prompt_input(overview, decisions, task)
 
@@ -100,10 +110,22 @@ def generate_quick_prompt(
         project_block = "\n\n---\n\n".join(project_context)
         user_content += f"\n\nPROJECT CONTEXT (prior saved work in this project):\n{project_block}"
 
+    if allow_clarification:
+        user_content += "\n\nCLARIFICATION ALLOWED: true"
+
+    if clarifications:
+        qa_block = "\n".join(f"Q: {c.get('question', '')}\nA: {c.get('answer', '')}" for c in clarifications)
+        user_content += f"\n\nPREVIOUS CLARIFICATIONS:\n{qa_block}"
+
     raw = call_llm(QUICK_PROMPT_SYSTEM_PROMPT, user_content, allowed_providers=allowed_providers)
     parsed = parse_llm_json(raw)
 
+    needs_clarification = bool(parsed.get("needs_clarification", False)) and allow_clarification
+    questions = parsed.get("questions", []) if isinstance(parsed.get("questions"), list) else []
+
     return {
+        "needs_clarification": needs_clarification,
+        "questions": [q for q in questions if isinstance(q, str)][:3] if needs_clarification else [],
         "role": parsed.get("role", ""),
         "prompt": parsed.get("prompt", ""),
         "assumptions": parsed.get("assumptions", []) if isinstance(parsed.get("assumptions"), list) else [],

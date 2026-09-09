@@ -736,11 +736,17 @@ async def debug_impersonate_test(payload: ShareLinkRequest):
     return results
 
 
+class ClarificationItem(BaseModel):
+    question: str
+    answer: str
+
+
 class QuickPromptRequest(BaseModel):
     overview: str = ""
     decisions: str = ""
     task: str = ""
     project_id: int | None = None
+    clarifications: list[ClarificationItem] = []
 
 
 @app.post("/quick-prompt")
@@ -758,10 +764,18 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
         }
 
     is_metered = access.plan in license_service.PLAN_CREDIT_LIMITS and access.license_id is not None
+    # Clarification-eligible plans peek-check credits instead of reserving
+    # upfront, since asking a question costs nothing - only a completed
+    # generation is charged, and only after we know it succeeded.
+    clarification_eligible = (
+        is_metered
+        and access.via == "session"
+        and access.plan in license_service.CLARIFICATION_ELIGIBLE_PLANS
+    )
     reserved = False
 
     try:
-        if is_metered:
+        if is_metered and not clarification_eligible:
             credit_db = get_db_session()
             try:
                 license_service.check_and_reserve_credits(credit_db, access.license_id)
@@ -770,6 +784,13 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
                 return {"success": False, "error": e.message}
             finally:
                 credit_db.close()
+        elif clarification_eligible:
+            peek_db = get_db_session()
+            try:
+                if not license_service.has_sufficient_credits(peek_db, access.license_id):
+                    return {"success": False, "error": "You've reached your usage limit."}
+            finally:
+                peek_db.close()
 
         allowed_providers = ["gemini"] if access.via == "free" else license_service.PLAN_PROVIDERS.get(access.plan)
 
@@ -798,17 +819,34 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
             finally:
                 proj_db.close()
 
+        clarifications_list = [{"question": c.question, "answer": c.answer} for c in payload.clarifications]
+
         result = generate_quick_prompt(
             payload.overview, payload.decisions, payload.task,
             allowed_providers=allowed_providers, aios_context=aios_context, project_context=project_context,
+            allow_clarification=clarification_eligible, clarifications=clarifications_list,
         )
 
-        if is_metered:
+        if result.get("needs_clarification"):
+            # Free - no reservation was made (non-eligible plans can never
+            # reach this branch, since allow_clarification is False for them).
+            return {"success": True, **result}
+
+        if is_metered and not clarification_eligible:
             commit_db = get_db_session()
             try:
                 license_service.commit_credits(commit_db, access.license_id)
             finally:
                 commit_db.close()
+        elif clarification_eligible:
+            # Full prompt confirmed - charge now, post-hoc.
+            charge_db = get_db_session()
+            try:
+                license_service.check_and_reserve_credits(charge_db, access.license_id)
+            except license_service.LicenseError as e:
+                return {"success": False, "error": e.message}
+            finally:
+                charge_db.close()
 
         if access.via == "session" and access.user_id and result.get("prompt"):
             db = None
@@ -826,7 +864,7 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
 
         return {"success": True, **result}
     except QuickPromptValidationError as e:
-        if is_metered and reserved:
+        if is_metered and not clarification_eligible and reserved:
             release_db = get_db_session()
             try:
                 license_service.release_credits(release_db, access.license_id)
@@ -834,7 +872,7 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
                 release_db.close()
         return {"success": False, "error": e.message}
     except QuickPromptError as e:
-        if is_metered and reserved:
+        if is_metered and not clarification_eligible and reserved:
             release_db = get_db_session()
             try:
                 license_service.release_credits(release_db, access.license_id)
@@ -842,7 +880,7 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
                 release_db.close()
         return {"success": False, "error": str(e)}
     except Exception as e:
-        if is_metered and reserved:
+        if is_metered and not clarification_eligible and reserved:
             release_db = get_db_session()
             try:
                 license_service.release_credits(release_db, access.license_id)
@@ -1623,12 +1661,28 @@ def recover_license_route(payload: RecoverLicenseRequest, request: Request):
             db.close()
 
 
+class RotateCodeRequest(BaseModel):
+    password: str
+
+
 @app.post("/license/{license_id}/rotate-code")
-def rotate_code_route(license_id: int, authorization: str = AiosHeader(default="")):
+def rotate_code_route(license_id: int, payload: RotateCodeRequest, request: Request, authorization: str = AiosHeader(default="")):
+    """
+    Requires the account password before rotating - generating a new
+    recovery code invalidates the old one, so this needs the same
+    re-authentication bar as revealing the raw key (see /license/reveal).
+    """
     db = None
     try:
         user_id = _require_user(authorization)
         db = get_db_session()
+        client_ip = request.client.host if request.client else None
+        ip_hash = recovery_service.hash_ip(client_ip)
+
+        if not payload.password or not verify_user_password(db, user_id, payload.password):
+            db.add(SecurityEvent(event_type="RECOVERY_CODE_ROTATED", user_id=user_id, success=False, ip_hash=ip_hash, detail="wrong password"))
+            db.commit()
+            return {"success": False, "error": "Incorrect password"}
 
         owned = license_service.get_license_for_user(db, user_id)
         if owned["license_id"] != license_id:
@@ -1636,6 +1690,10 @@ def rotate_code_route(license_id: int, authorization: str = AiosHeader(default="
 
         new_code = recovery_service.rotate_recovery_code(db, license_id)
         remaining = recovery_service.get_remaining_count(db, license_id)
+
+        db.add(SecurityEvent(event_type="RECOVERY_CODE_ROTATED", user_id=user_id, success=True, ip_hash=ip_hash))
+        db.commit()
+
         return {"success": True, "new_code": new_code, "recovery_codes_remaining": remaining}
     except ValueError as e:
         return {"success": False, "error": str(e)}

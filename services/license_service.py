@@ -61,6 +61,13 @@ PLAN_AIOS_DAILY_LIMIT = {"pro_account": 30, "more_context_account": 60}
 # instead (e.g. pro_account).
 PLAN_AIOS_CREDIT_LIMITS = {"more_context_account": 500}
 
+# Plans allowed to receive Quick Prompt clarifying questions instead of
+# an immediate best-effort generation. Asking a question never costs
+# credits - only a completed generation does - so eligibility is
+# intentionally narrow (signed-in paid plans only) to avoid an
+# unlimited-free-interaction surface on other plans.
+CLARIFICATION_ELIGIBLE_PLANS = {"pro_account", "more_context_account"}
+
 
 class LicenseError(Exception):
     def __init__(self, message: str):
@@ -276,6 +283,20 @@ def release_aios_credits(db: Session, license_id: int, cost: int = CREDIT_COST_P
     db.commit()
     db.refresh(lic)
     return _serialize(lic)
+
+
+def has_sufficient_credits(db: Session, license_id: int, cost: int = CREDIT_COST_PER_ACTION) -> bool:
+    """Read-only check, no reservation/deduction - used before an action
+    that might not end up costing credits at all (e.g. Quick Prompt on a
+    clarification-eligible plan, where asking a question is free and
+    only a completed generation is charged). Returns False for an
+    inactive license or a plan with no metered pool at all."""
+    lic = db.query(License).filter(License.id == license_id).first()
+    if not lic or lic.status != "active":
+        return False
+    if lic.credits_remaining is None:
+        return False
+    return lic.credits_remaining >= cost
 
 
 def get_or_create_free_license_for_user(db: Session, user_id: int) -> Dict[str, Any]:
