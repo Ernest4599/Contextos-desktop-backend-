@@ -34,22 +34,34 @@ def _serialize(p: ContextPackage) -> Dict[str, Any]:
         "title": p.title,
         "preview": p.preview,
         "content": p.content,
+        "project_id": p.project_id,
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }
 
 
-def save_package(db: Session, user_id: int, source: str, title: str, content: str) -> Dict[str, Any]:
+def save_package(db: Session, user_id: int, source: str, title: str, content: str, project_id: int | None = None) -> Dict[str, Any]:
     package = ContextPackage(
         user_id=user_id,
         source=source,
         title=title[:MAX_TITLE_LENGTH],
         preview=_preview(content),
         content=content,
+        project_id=project_id,
     )
     db.add(package)
     db.commit()
     db.refresh(package)
     return _serialize(package)
+
+
+def list_packages_for_project(db: Session, user_id: int, project_id: int) -> List[Dict[str, Any]]:
+    packages = (
+        db.query(ContextPackage)
+        .filter(ContextPackage.user_id == user_id, ContextPackage.project_id == project_id)
+        .order_by(ContextPackage.created_at.desc())
+        .all()
+    )
+    return [_serialize(p) for p in packages]
 
 
 def list_packages(db: Session, user_id: int) -> List[Dict[str, Any]]:

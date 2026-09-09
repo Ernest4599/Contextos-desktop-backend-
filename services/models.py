@@ -107,6 +107,7 @@ class ContextPackage(Base):
     title = Column(String, nullable=False)
     preview = Column(String, nullable=False)
     content = Column(String, nullable=False)
+    project_id = Column(Integer, index=True, nullable=True)  # optional - which Project this package belongs to, if any
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -1,5 +1,5 @@
 from sqlalchemy.sql import func
-from fastapi import FastAPI, UploadFile, File, Cookie, Response, Depends, Request
+from fastapi import FastAPI, UploadFile, File, Cookie, Response, Depends, Request, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from curl_cffi import requests as crequests
@@ -16,7 +16,7 @@ from services.models import User, AiosMemory, ContextPackage, SecurityEvent, Lic
 import json
 
 
-async def _pipeline_with_autosave(messages, access: AccessContext, source: str, is_metered: bool = False, license_id: int | None = None, allowed_providers: list[str] | None = None):
+async def _pipeline_with_autosave(messages, access: AccessContext, source: str, is_metered: bool = False, license_id: int | None = None, allowed_providers: list[str] | None = None, project_id: int | None = None):
     """
     Wraps run_processing_pipeline to auto-save the resulting Context
     Package for signed-in users, without processing_pipeline.py itself
@@ -43,7 +43,7 @@ async def _pipeline_with_autosave(messages, access: AccessContext, source: str, 
                     db = get_db_session()
                     title = package_content.strip().split("\n")[0][:80] or "Context Package"
                     package_service.save_package(
-                        db, access.user_id, source=source, title=title, content=package_content
+                        db, access.user_id, source=source, title=title, content=package_content, project_id=project_id
                     )
                 except Exception as e:
                     print(f"[PACKAGES] Failed to auto-save {source} package: {e}")
@@ -618,6 +618,7 @@ async def import_share_link(payload: ShareLinkRequest, access: AccessContext = D
 
 class PasteConversationRequest(BaseModel):
     text: str
+    project_id: int | None = None
 
 
 @app.post("/process/paste")
@@ -657,13 +658,13 @@ async def process_paste(payload: PasteConversationRequest, access: AccessContext
     messages = split_messages(validated)
     allowed_providers = ["gemini"] if access.via == "free" else license_service.PLAN_PROVIDERS.get(access.plan)
     return StreamingResponse(
-        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers),
+        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers, project_id=payload.project_id),
         media_type="text/event-stream",
     )
 
 
 @app.post("/process/upload")
-async def process_upload(file: UploadFile = File(...), access: AccessContext = Depends(require_access)):
+async def process_upload(file: UploadFile = File(...), project_id: int | None = Form(None), access: AccessContext = Depends(require_access)):
     raw_bytes = await file.read()
     try:
         messages = extract_file_content(file.filename, raw_bytes)
@@ -699,7 +700,7 @@ async def process_upload(file: UploadFile = File(...), access: AccessContext = D
 
     allowed_providers = ["gemini"] if access.via == "free" else license_service.PLAN_PROVIDERS.get(access.plan)
     return StreamingResponse(
-        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers),
+        _pipeline_with_autosave(messages, access, source="import", is_metered=is_metered, license_id=access.license_id, allowed_providers=allowed_providers, project_id=project_id),
         media_type="text/event-stream",
     )
 
@@ -739,6 +740,7 @@ class QuickPromptRequest(BaseModel):
     overview: str = ""
     decisions: str = ""
     task: str = ""
+    project_id: int | None = None
 
 
 @app.post("/quick-prompt")
@@ -783,9 +785,22 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
             finally:
                 aios_db.close()
 
+        project_context = None
+        if access.via == "session" and access.user_id and payload.project_id:
+            proj_db = get_db_session()
+            try:
+                project_packages = package_service.list_packages_for_project(proj_db, access.user_id, payload.project_id)
+                if project_packages:
+                    project_context = [p["content"] for p in project_packages]
+            except Exception as e:
+                print(f"[QUICK_PROMPT] Failed to fetch project context, continuing without it: {e}")
+                project_context = None
+            finally:
+                proj_db.close()
+
         result = generate_quick_prompt(
             payload.overview, payload.decisions, payload.task,
-            allowed_providers=allowed_providers, aios_context=aios_context,
+            allowed_providers=allowed_providers, aios_context=aios_context, project_context=project_context,
         )
 
         if is_metered:
@@ -801,7 +816,7 @@ async def quick_prompt(payload: QuickPromptRequest, access: AccessContext = Depe
                 db = get_db_session()
                 title = (payload.task or "Quick Prompt").strip() or "Quick Prompt"
                 package_service.save_package(
-                    db, access.user_id, source="quick_prompt", title=title, content=result["prompt"]
+                    db, access.user_id, source="quick_prompt", title=title, content=result["prompt"], project_id=payload.project_id
                 )
             except Exception as e:
                 print(f"[PACKAGES] Failed to auto-save quick-prompt package: {e}")
@@ -1332,6 +1347,27 @@ def delete_single_package(package_id: int, authorization: str = AiosHeader(defau
         return {"success": False, "error": str(e)}
     except Exception as e:
         print(f"[PACKAGES] Unexpected error in DELETE /packages/id: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.get("/projects/{project_id}/packages")
+def get_project_packages(project_id: int, authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        db = get_db_session()
+        project_service.get_project(db, user_id, project_id)  # raises ProjectError if not found/not owned
+        packages = package_service.list_packages_for_project(db, user_id, project_id)
+        return {"success": True, "packages": packages}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except project_service.ProjectError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[PROJECTS] Unexpected error in GET /projects/id/packages: {e}")
         return {"success": False, "error": "Something went wrong. Please try again."}
     finally:
         if db is not None:
