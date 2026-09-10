@@ -41,6 +41,8 @@ def _run_migrations() -> None:
     from sqlalchemy import text
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE aios_memories ADD COLUMN IF NOT EXISTS batch_id VARCHAR"))
+        conn.execute(text("ALTER TABLE aios_memories ADD COLUMN IF NOT EXISTS temporal_state VARCHAR DEFAULT 'unknown'"))
+        conn.execute(text("ALTER TABLE aios_memories ADD COLUMN IF NOT EXISTS last_confirmed_at TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS installation_id VARCHAR"))
