@@ -26,3 +26,4 @@ pyjwt==2.10.1
 slowapi==0.1.9
 slowapi==0.1.9
 cryptography==43.0.3
+boto3==1.35.99

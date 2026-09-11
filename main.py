@@ -944,7 +944,7 @@ async def process_share_link(payload: ShareLinkRequest, access: AccessContext = 
 
 
 from services.db import get_db_session, init_db
-from services.auth_service import signup, login, decode_session_token, AuthError, verify_user_password
+from services.auth_service import signup, login, decode_session_token, AuthError, verify_user_password, verify_email, request_password_reset, reset_password
 from services import terms_service
 from fastapi import Header
 
@@ -973,10 +973,9 @@ def auth_signup(payload: SignupRequest, contextos_anon_id: str | None = Cookie(d
     db = None
     try:
         db = get_db_session()
-        token, email = signup(db, payload.email, payload.password, payload.confirm_password)
-        payload_data = decode_session_token(token)
-        terms_service.link_anon_to_user(db, contextos_anon_id, int(payload_data["sub"]))
-        return {"success": True, "token": token, "email": email}
+        user_id, email = signup(db, payload.email, payload.password, payload.confirm_password)
+        terms_service.link_anon_to_user(db, contextos_anon_id, user_id)
+        return {"success": True, "email": email, "message": "Account created. Please check your email to verify your account before signing in."}
     except (AuthError, RuntimeError) as e:
         return {"success": False, "error": str(e)}
     except Exception as e:
@@ -1015,6 +1014,67 @@ def auth_login(payload: LoginRequest, request: Request, contextos_anon_id: str |
         return {"success": False, "error": str(e)}
     except Exception as e:
         print(f"[AUTH] Unexpected login error: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.get("/auth/verify-email")
+def auth_verify_email(token: str):
+    db = None
+    try:
+        db = get_db_session()
+        email = verify_email(db, token)
+        return {"success": True, "email": email, "message": "Email verified. You can now sign in."}
+    except AuthError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AUTH] Unexpected verify-email error: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+@app.post("/auth/forgot-password")
+def auth_forgot_password(payload: ForgotPasswordRequest):
+    db = None
+    try:
+        db = get_db_session()
+        request_password_reset(db, payload.email)
+        # Always the same response, regardless of whether the email
+        # exists - see request_password_reset's docstring.
+        return {"success": True, "message": "If an account exists for that email, a reset link has been sent."}
+    except Exception as e:
+        print(f"[AUTH] Unexpected forgot-password error: {e}")
+        return {"success": True, "message": "If an account exists for that email, a reset link has been sent."}
+    finally:
+        if db is not None:
+            db.close()
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+    confirm_password: str
+
+
+@app.post("/auth/reset-password")
+def auth_reset_password(payload: ResetPasswordRequest):
+    db = None
+    try:
+        db = get_db_session()
+        reset_password(db, payload.token, payload.new_password, payload.confirm_password)
+        return {"success": True, "message": "Password updated. You can now sign in."}
+    except AuthError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AUTH] Unexpected reset-password error: {e}")
         return {"success": False, "error": "Something went wrong. Please try again."}
     finally:
         if db is not None:
