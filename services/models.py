@@ -147,3 +147,23 @@ class FreeTierLicense(Base):
     failed_attempts_today = Column(Integer, nullable=False, default=0)
     last_reset_date = Column(DateTime(timezone=True), server_default=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AiosEditPattern(Base):
+    """
+    Tracks how many times a user's Quick Prompt edits have matched each
+    fixed pattern_key (see aios_service.EDIT_PATTERN_KEYS), across
+    separate Quick Prompt sessions. Intermediate counter only - never
+    read as an AIOS memory itself. Once occurrences reaches the repeat
+    threshold, aios_service writes a real low-confidence AiosMemory row
+    and resets occurrences back to 0 here, per the "repeated behavior,
+    not a single edit" rule in the Quick Prompt algorithm.
+    """
+    __tablename__ = "aios_edit_patterns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    pattern_key = Column(String, index=True, nullable=False)
+    occurrences = Column(Integer, nullable=False, default=0)
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

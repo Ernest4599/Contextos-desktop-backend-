@@ -52,3 +52,15 @@ def _run_migrations() -> None:
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS last_aios_reset_date TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS aios_credits_remaining INTEGER"))
         conn.execute(text("ALTER TABLE context_packages ADD COLUMN IF NOT EXISTS project_id INTEGER"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS aios_edit_patterns (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                pattern_key VARCHAR NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TIMESTAMPTZ DEFAULT now(),
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_edit_patterns_user_id ON aios_edit_patterns (user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_edit_patterns_pattern_key ON aios_edit_patterns (pattern_key)"))
