@@ -1938,3 +1938,34 @@ def terms_accept(
     finally:
         if db is not None:
             db.close()
+
+
+class CancelLicenseRequest(BaseModel):
+    license_key: str | None = None
+
+
+@app.post("/license/cancel")
+def cancel_license_route(payload: CancelLicenseRequest, authorization: str = AiosHeader(default="")):
+    """
+    Signed-in: cancels the account's current license, no key needed.
+    Anonymous: requires license_key in the body (possession-based auth,
+    matching the standalone-license security model used elsewhere).
+    """
+    db = None
+    try:
+        try:
+            user_id = _require_user(authorization)
+        except ValueError:
+            user_id = None
+
+        db = get_db_session()
+        result = license_service.cancel_license(db, user_id, payload.license_key)
+        return {"success": True, "license": result}
+    except license_service.LicenseError as e:
+        return {"success": False, "error": e.message}
+    except Exception as e:
+        print(f"[LICENSE] Unexpected error in /license/cancel: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()

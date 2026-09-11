@@ -367,3 +367,41 @@ def get_license_by_key(db: Session, license_key: str) -> Dict[str, Any]:
         raise LicenseError("License not found")
 
     return _serialize(license)
+
+
+def cancel_license(db: Session, user_id: Optional[int], license_key: Optional[str]) -> Dict[str, Any]:
+    """
+    Cancels the caller's current license (sets status to "revoked").
+
+    Signed-in: cancels whatever get_license_for_user would return for
+    this account - no key needed, the session already proves ownership.
+
+    Anonymous: requires the exact license_key (possession-based auth,
+    matching the existing standalone-license security model everywhere
+    else in this file) and only ever cancels a license with no linked
+    account (user_id IS NULL) - an anonymous caller can never cancel an
+    account-linked license this way, even if they somehow have its key.
+    """
+    if user_id is not None:
+        license = (
+            db.query(License)
+            .filter(License.user_id == user_id, License.status == "active")
+            .order_by(License.created_at.desc())
+            .first()
+        )
+        if not license:
+            raise LicenseError("No active license found for this account")
+    else:
+        if not license_key:
+            raise LicenseError("License key is required")
+        license = db.query(License).filter(License.license_key == license_key).first()
+        if not license or license.user_id is not None:
+            raise LicenseError("License not found")
+        if license.status != "active":
+            raise LicenseError("This license is not active")
+
+    license.status = "revoked"
+    db.add(license)
+    db.commit()
+    db.refresh(license)
+    return _serialize(license)
