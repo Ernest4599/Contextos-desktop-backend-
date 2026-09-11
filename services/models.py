@@ -149,6 +149,53 @@ class FreeTierLicense(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class AiosEntity(Base):
+    """
+    A node in the AIOS Brain graph - either a fact ABOUT the user
+    (is_user_owned=True, e.g. "Software Engineer" as their occupation,
+    "TechBit" as a page they run) or supporting knowledge AIOS needed TO
+    UNDERSTAND something the user said (is_user_owned=False, e.g. what
+    "Instagram" or "software engineer" generally means). The second kind
+    is never surfaced to the user as one of "their" memories - see
+    aios_service.py's docstring on the two kinds of knowledge.
+    """
+    __tablename__ = "aios_entities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    entity_type = Column(String, nullable=False)  # person | organization | product | platform | project | concept | other
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)  # supporting knowledge, mainly for concept entities
+    is_user_owned = Column(Boolean, nullable=False, default=True)
+    confidence = Column(String, default="medium")  # high | medium | low
+    source = Column(String, default="user_input")
+    status = Column(String, default="active")  # active | historical | needs_review
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AiosRelationship(Base):
+    """
+    A typed edge in the AIOS Brain graph. from_entity_id is nullable -
+    null means "the user" is the source (e.g. USER -occupation-> Software
+    Engineer), matching the algorithm's examples where most relationships
+    originate from the user directly rather than from another entity.
+    """
+    __tablename__ = "aios_relationships"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    from_entity_id = Column(Integer, index=True, nullable=True)  # null = the user
+    relationship_type = Column(String, nullable=False)  # verb phrase, e.g. "occupation", "runs", "platform", "topic"
+    to_entity_id = Column(Integer, index=True, nullable=False)
+    confidence = Column(String, default="medium")
+    temporal_state = Column(String, default="unknown")  # permanent | current | temporary | historical | unknown
+    status = Column(String, default="active")  # active | historical | needs_review
+    source = Column(String, default="user_input")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class AiosEditPattern(Base):
     """
     Tracks how many times a user's Quick Prompt edits have matched each

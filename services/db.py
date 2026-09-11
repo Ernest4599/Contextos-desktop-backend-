@@ -64,3 +64,37 @@ def _run_migrations() -> None:
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_edit_patterns_user_id ON aios_edit_patterns (user_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_edit_patterns_pattern_key ON aios_edit_patterns (pattern_key)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS aios_entities (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                entity_type VARCHAR NOT NULL,
+                name VARCHAR NOT NULL,
+                description VARCHAR,
+                is_user_owned BOOLEAN NOT NULL DEFAULT true,
+                confidence VARCHAR DEFAULT 'medium',
+                source VARCHAR DEFAULT 'user_input',
+                status VARCHAR DEFAULT 'active',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_entities_user_id ON aios_entities (user_id)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS aios_relationships (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                from_entity_id INTEGER,
+                relationship_type VARCHAR NOT NULL,
+                to_entity_id INTEGER NOT NULL,
+                confidence VARCHAR DEFAULT 'medium',
+                temporal_state VARCHAR DEFAULT 'unknown',
+                status VARCHAR DEFAULT 'active',
+                source VARCHAR DEFAULT 'user_input',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_relationships_user_id ON aios_relationships (user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_relationships_from_entity_id ON aios_relationships (from_entity_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_aios_relationships_to_entity_id ON aios_relationships (to_entity_id)"))
