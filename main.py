@@ -1169,6 +1169,25 @@ def aios_overview(authorization: str = AiosHeader(default="")):
             db.close()
 
 
+@app.get("/aios/brain")
+def aios_brain(authorization: str = AiosHeader(default="")):
+    db = None
+    try:
+        user_id = _require_user(authorization)
+        _require_aios_access(user_id)
+        db = get_db_session()
+        result = aios_service.get_brain_graph(db, user_id)
+        return {"success": True, **result}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[AIOS] Unexpected error in /aios/brain: {e}")
+        return {"success": False, "error": "Something went wrong. Please try again."}
+    finally:
+        if db is not None:
+            db.close()
+
+
 @app.get("/aios/memories")
 def aios_memories(category: str | None = None, authorization: str = AiosHeader(default="")):
     db = None
